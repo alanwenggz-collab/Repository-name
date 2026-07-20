@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { AnimationItem } from "lottie-web";
 
 type ShapeName = "circle" | "square" | "triangle" | "star" | "heart" | "hexagon" | "path";
 type ColorInfo = { hex: string; label: string; count: number };
@@ -193,7 +194,7 @@ function LottiePreview({ data }: { data: Record<string, unknown> }) {
   const ref = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
-    let animation: { destroy: () => void } | undefined; let active = true;
+    let animation: AnimationItem | undefined; let active = true;
     import("lottie-web/build/player/lottie_light").then(({ default: lottie }) => {
       if (!active || !ref.current) return;
       ref.current.innerHTML = "";
@@ -244,11 +245,11 @@ export default function Home() {
   const changeColor = (to: string) => {
     if (!colorEditor || !/^#[0-9A-F]{6}$/i.test(to)) return;
     const next = to.toUpperCase(); const from = colorEditor.current;
-    setData((current) => replaceColor(current, from, next)); setColorEditor({ ...colorEditor, current: next, draft: next }); setInspectorTab("preview"); setToast(`已替换 ${from} 的全部引用`);
+    setData((current: unknown) => replaceColor(current, from, next)); setColorEditor({ ...colorEditor, current: next, draft: next }); setInspectorTab("preview"); setToast(`已替换 ${from} 的全部引用`);
   };
   const changeShape = (from: ShapeInfo, to: string) => {
     if (!to.trim()) return;
-    setData((current) => replaceShape(current, from, to.trim(), findShapeTemplate(current, to.trim()))); setSelectedShape(""); setCustomShape(""); setInspectorTab("preview"); setToast(`已整体替换 ${from.count} 个「${from.name}」组合形状`);
+    setData((current: unknown) => replaceShape(current, from, to.trim(), findShapeTemplate(current, to.trim()))); setSelectedShape(""); setCustomShape(""); setInspectorTab("preview"); setToast(`已整体替换 ${from.count} 个「${from.name}」组合形状`);
   };
   const download = () => { const blob = new Blob([jsonText], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = fileName.replace(/\.json$/i, "") + "-edited.json"; a.click(); URL.revokeObjectURL(url); setToast("修改后的 JSON 已下载"); };
 
