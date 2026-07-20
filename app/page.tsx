@@ -4,16 +4,15 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type ShapeName = "circle" | "square" | "triangle" | "star" | "heart" | "hexagon" | "path";
 type ColorInfo = { hex: string; label: string; count: number };
-type ShapeInfo = { name: ShapeName; raw: string; label: string; count: number; mode: "named" | "lottie" };
+type ShapeInfo = { name: string; count: number; mode: "lottie-group" | "lottie-layer" | "component" | "reference" };
 
 const SAMPLE = {
   name: "summer-campaign",
   canvas: { background: "#F6F5F2", width: 1080, height: 1080 },
   elements: [
-    { id: "badge-1", shape: "circle", fill: "#FF6B4A", icon: "star" },
-    { id: "badge-2", shape: "circle", fill: "#FF6B4A", icon: "star" },
-    { id: "card", shape: "square", fill: "#1F2937", stroke: "#FFFFFF" },
-    { id: "accent", shape: "triangle", fill: [1, 0.804, 0.337, 1] },
+    { id: "badge-1", name: "sun-badge", children: [{ shape: "circle", fill: "#FF6B4A" }, { shape: "star", fill: "#FFFFFF" }] },
+    { id: "badge-2", name: "sun-badge", children: [{ shape: "circle", fill: "#FF6B4A" }, { shape: "star", fill: "#FFFFFF" }] },
+    { id: "card", name: "dark-card", children: [{ shape: "square", fill: "#1F2937" }, { shape: "triangle", fill: [1, 0.804, 0.337, 1] }] },
   ],
 };
 
@@ -27,10 +26,7 @@ const ALIASES: Record<string, ShapeName> = {
   triangle: "triangle", polygon3: "triangle", star: "star", sr: "star", heart: "heart",
   hexagon: "hexagon", polygon: "hexagon", path: "path", shape: "path", sh: "path",
 };
-const LOTTIE_TARGET: Partial<Record<ShapeName, string>> = { circle: "el", square: "rc", star: "sr", path: "sh" };
 const COLOR_KEY = /^(c|fc|sc|color|colour|fill|fillcolor|stroke|strokecolor|background|backgroundcolor|bg|tint|foreground)$/i;
-const SHAPE_KEY = /^(shape|shapeName|icon|iconName|symbol|type|kind|element|primitive)$/i;
-const CUSTOM_SHAPE_KEY = /^(shape|shapeName|icon|iconName|symbol)$/i;
 
 function clamp(value: number) { return Math.max(0, Math.min(255, Math.round(value))); }
 function rgbHex(r: number, g: number, b: number) { return `#${[r, g, b].map((v) => clamp(v).toString(16).padStart(2, "0")).join("")}`.toUpperCase(); }
@@ -90,24 +86,28 @@ function scanColors(data: unknown) {
   scan(data); return [...map.values()];
 }
 
-function shapeCandidate(value: unknown, key: string): Omit<ShapeInfo, "count"> | null {
-  if (typeof value !== "string") return null;
-  const raw = value.trim(); const lower = raw.toLowerCase().replace(/[\s_-]/g, "");
-  if (key === "ty" && ALIASES[lower]) return { name: ALIASES[lower], raw, label: SHAPE_LABEL[ALIASES[lower]], mode: "lottie" };
-  if ((SHAPE_KEY.test(key) || ALIASES[lower]) && ALIASES[lower]) return { name: ALIASES[lower], raw, label: SHAPE_LABEL[ALIASES[lower]], mode: "named" };
-  if (CUSTOM_SHAPE_KEY.test(key) && raw.length <= 80) return { name: "square", raw, label: raw, mode: "named" };
+function composedDescriptor(value: unknown, parentKey = "root"): Omit<ShapeInfo, "count"> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const object = value as Record<string, unknown>;
+  if (object.ty === "gr" && typeof object.nm === "string" && object.nm.trim()) return { name: object.nm.trim(), mode: "lottie-group" };
+  if (parentKey === "layers" && typeof object.nm === "string" && object.nm.trim()) return { name: object.nm.trim(), mode: "lottie-layer" };
+  const name = [object.name, object.nm, object.componentName].find((item) => typeof item === "string" && item.trim()) as string | undefined;
+  const hasParts = ["children", "items", "elements", "shapes", "components", "paths"].some((key) => Array.isArray(object[key]) && (object[key] as unknown[]).length > 0);
+  if (name && hasParts && !ALIASES[name.toLowerCase().replace(/[\s_-]/g, "")]) return { name: name.trim(), mode: "component" };
+  const reference = [object.iconName, object.symbol, object.icon, object.shapeName].find((item) => typeof item === "string" && item.trim()) as string | undefined;
+  if (reference && !ALIASES[reference.toLowerCase().replace(/[\s_-]/g, "")]) return { name: reference.trim(), mode: "reference" };
   return null;
 }
 
 function scanShapes(data: unknown) {
   const map = new Map<string, ShapeInfo>();
-  const scan = (value: unknown, key = "root") => {
-    const candidate = shapeCandidate(value, key);
+  const scan = (value: unknown, parentKey = "root") => {
+    const candidate = composedDescriptor(value, parentKey);
     if (candidate) {
-      const id = `${candidate.mode}:${candidate.raw}`; const current = map.get(id);
+      const id = `${candidate.mode}:${candidate.name}`; const current = map.get(id);
       map.set(id, { ...candidate, count: (current?.count || 0) + 1 });
     }
-    if (Array.isArray(value)) value.forEach((child, index) => scan(child, String(index)));
+    if (Array.isArray(value)) value.forEach((child) => scan(child, parentKey));
     else if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([childKey, child]) => scan(child, childKey));
   };
   scan(data); return [...map.values()];
@@ -140,11 +140,46 @@ function replaceColor(data: unknown, fromHex: string, toHex: string, key = "root
   return data;
 }
 
-function replaceShape(data: unknown, from: ShapeInfo, target: string, key = "root"): unknown {
-  const candidate = shapeCandidate(data, key);
-  if (candidate && candidate.raw === from.raw && candidate.mode === from.mode) return from.mode === "lottie" ? (LOTTIE_TARGET[target as ShapeName] || data) : target;
-  if (Array.isArray(data)) return data.map((child, index) => replaceShape(child, from, target, String(index)));
-  if (data && typeof data === "object") return Object.fromEntries(Object.entries(data as Record<string, unknown>).map(([childKey, child]) => [childKey, replaceShape(child, from, target, childKey)]));
+function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)); }
+
+function findShapeTemplate(data: unknown, target: string, parentKey = "root"): Record<string, unknown> | null {
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const descriptor = composedDescriptor(data, parentKey);
+    if (descriptor?.name === target && descriptor.mode !== "reference") return data as Record<string, unknown>;
+    for (const [childKey, child] of Object.entries(data as Record<string, unknown>)) {
+      const found = findShapeTemplate(child, target, childKey); if (found) return found;
+    }
+  } else if (Array.isArray(data)) for (const child of data) { const found = findShapeTemplate(child, target, parentKey); if (found) return found; }
+  return null;
+}
+
+function transplantShape(current: Record<string, unknown>, template: Record<string, unknown>, mode: ShapeInfo["mode"]) {
+  const next = clone(template);
+  if (mode === "lottie-group" && Array.isArray(current.it) && Array.isArray(next.it)) {
+    const transform = (current.it as Record<string, unknown>[]).find((item) => item.ty === "tr");
+    if (transform) next.it = (next.it as Record<string, unknown>[]).map((item) => item.ty === "tr" ? clone(transform) : item);
+  }
+  const preserve = mode === "lottie-layer" ? ["ind", "parent", "ks", "ip", "op", "st"] : ["id", "key", "x", "y", "position", "transform", "layout"];
+  preserve.forEach((key) => { if (key in current) next[key] = clone(current[key]); });
+  return next;
+}
+
+function renameComposed(object: Record<string, unknown>, from: ShapeInfo, target: string) {
+  const next = { ...object };
+  for (const key of ["nm", "name", "componentName", "iconName", "symbol", "icon", "shapeName"]) if (next[key] === from.name) next[key] = target;
+  return next;
+}
+
+function replaceShape(data: unknown, from: ShapeInfo, target: string, template: Record<string, unknown> | null, parentKey = "root"): unknown {
+  if (Array.isArray(data)) return data.map((child) => replaceShape(child, from, target, template, parentKey));
+  if (data && typeof data === "object") {
+    const object = data as Record<string, unknown>; const descriptor = composedDescriptor(object, parentKey);
+    if (descriptor?.name === from.name && descriptor.mode === from.mode) {
+      if (template && from.mode !== "reference") return transplantShape(object, template, from.mode);
+      return renameComposed(object, from, target);
+    }
+    return Object.fromEntries(Object.entries(object).map(([childKey, child]) => [childKey, replaceShape(child, from, target, template, childKey)]));
+  }
   return data;
 }
 
@@ -152,10 +187,7 @@ function isLottie(data: unknown): data is Record<string, unknown> {
   return !!data && typeof data === "object" && Array.isArray((data as Record<string, unknown>).layers) && typeof (data as Record<string, unknown>).fr === "number";
 }
 
-function Shape({ name, className = "" }: { name: string; className?: string }) {
-  const safe = [...SHAPES, "path"].includes(name as ShapeName) ? name : "square";
-  return <span className={`shape shape-${safe} ${className}`} aria-label={SHAPE_LABEL[safe]} />;
-}
+function ComposedMark() { return <span className="composed-mark"><i /><i /><i /></span>; }
 
 function LottiePreview({ data }: { data: Record<string, unknown> }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -177,7 +209,7 @@ function VisualPreview({ data, colors, shapes }: { data: unknown; colors: ColorI
   const items = shapes.flatMap((shape) => Array.from({ length: Math.min(shape.count, 6) }, () => shape)).slice(0, 24);
   if (isLottie(data)) return <LottiePreview data={data} />;
   return <div className="token-stage" style={{ background: colors.find((c) => c.hex === "#FFFFFF")?.hex || "#F6F5F2" }}>
-    {items.map((item, index) => <div className="preview-object" key={`${item.raw}-${index}`} style={{ color: colors[index % Math.max(colors.length, 1)]?.hex || "#7557E8" }}><Shape name={item.name} /><small>{item.raw}</small></div>)}
+    {items.map((item, index) => <div className="preview-object" key={`${item.name}-${index}`} style={{ color: colors[index % Math.max(colors.length, 1)]?.hex || "#7557E8" }}><ComposedMark /><small>{item.name}</small></div>)}
     {!items.length && colors.map((color) => <div className="preview-color" key={color.hex} style={{ background: color.hex }}><span>{color.hex}</span></div>)}
     {!items.length && !colors.length && <div className="preview-message">暂未找到可视化元素<br /><small>支持 CSS、RGB 数组、Lottie 颜色与常见形状字段</small></div>}
   </div>;
@@ -190,13 +222,14 @@ export default function Home() {
   const [inspectorTab, setInspectorTab] = useState<"preview" | "json">("preview");
   const [selectedShape, setSelectedShape] = useState("");
   const [customShape, setCustomShape] = useState("");
+  const [colorEditor, setColorEditor] = useState<{ current: string; draft: string; count: number } | null>(null);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("已识别示例 JSON");
   const fileRef = useRef<HTMLInputElement>(null);
   const colors = useMemo(() => scanColors(data), [data]);
   const shapes = useMemo(() => scanShapes(data), [data]);
   const jsonText = useMemo(() => JSON.stringify(data, null, 2), [data]);
-  const activeShape = shapes.find((item) => `${item.mode}:${item.raw}` === selectedShape) || shapes[0];
+  const activeShape = shapes.find((item) => `${item.mode}:${item.name}` === selectedShape) || shapes[0];
 
   const loadFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; if (!file) return;
@@ -208,22 +241,30 @@ export default function Home() {
     event.target.value = "";
   };
 
-  const changeColor = (from: string, to: string) => { setData((current) => replaceColor(current, from, to)); setInspectorTab("preview"); setToast(`已替换 ${from} 的全部引用`); };
-  const changeShape = (from: ShapeInfo, to: string) => { if (!to.trim()) return; setData((current) => replaceShape(current, from, to.trim())); setSelectedShape(""); setCustomShape(""); setInspectorTab("preview"); setToast(`已同步替换 ${from.count} 个「${from.raw}」实例`); };
+  const changeColor = (to: string) => {
+    if (!colorEditor || !/^#[0-9A-F]{6}$/i.test(to)) return;
+    const next = to.toUpperCase(); const from = colorEditor.current;
+    setData((current) => replaceColor(current, from, next)); setColorEditor({ ...colorEditor, current: next, draft: next }); setInspectorTab("preview"); setToast(`已替换 ${from} 的全部引用`);
+  };
+  const changeShape = (from: ShapeInfo, to: string) => {
+    if (!to.trim()) return;
+    setData((current) => replaceShape(current, from, to.trim(), findShapeTemplate(current, to.trim()))); setSelectedShape(""); setCustomShape(""); setInspectorTab("preview"); setToast(`已整体替换 ${from.count} 个「${from.name}」组合形状`);
+  };
   const download = () => { const blob = new Blob([jsonText], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = fileName.replace(/\.json$/i, "") + "-edited.json"; a.click(); URL.revokeObjectURL(url); setToast("修改后的 JSON 已下载"); };
 
   return <main>
     <header className="topbar"><a className="brand" href="#" aria-label="Jsonicle 首页"><span className="brand-mark">J</span><span>Jsonicle</span></a><div className="top-actions"><span className="privacy"><span className="lock">◆</span>文件仅在本地处理</span><button className="button button-ghost" onClick={() => fileRef.current?.click()}>＋ 上传文件</button><button className="button button-dark" onClick={download}>下载 JSON <span>↓</span></button></div></header>
-    <section className="hero"><div><span className="eyebrow">VISUAL JSON EDITOR · 02</span><h1>找到它，<em>看到它。</em></h1><p>现已支持 CSS、RGB 数组、Lottie 颜色与形状代码，修改结果在右侧画布实时呈现。</p></div><button className="file-card" onClick={() => fileRef.current?.click()}><span className="file-icon">{"{ }"}</span><span><strong>{fileName}</strong><small>{(new Blob([jsonText]).size / 1024).toFixed(1)} KB · {isLottie(data) ? "LOTTIE JSON" : "JSON"}</small></span><span className="file-change">更换文件</span></button><input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /></section>
+    <section className="hero"><div><span className="eyebrow">VISUAL JSON EDITOR · 03</span><h1>找到它，<em>看到它。</em></h1><p>识别颜色与已经拼合完成的命名形状；基础图元不会再作为独立形状出现。</p></div><button className="file-card" onClick={() => fileRef.current?.click()}><span className="file-icon">{"{ }"}</span><span><strong>{fileName}</strong><small>{(new Blob([jsonText]).size / 1024).toFixed(1)} KB · {isLottie(data) ? "LOTTIE JSON" : "JSON"}</small></span><span className="file-change">更换文件</span></button><input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /></section>
     {error && <div className="error" role="alert">{error}</div>}
     <section className="workspace">
-      <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>形状<small>Shapes</small></span><b>{shapes.length}</b></button><div className="rail-note"><span>↗</span><p>颜色数组和 Lottie 的 c.k / ty 字段也会被识别。</p></div></aside>
-      <section className="editor-panel"><div className="section-head"><div><span className="index">0{activeTab === "colors" ? "1" : "2"}</span><h2>{activeTab === "colors" ? "颜色" : "形状"}</h2><span className="en">{activeTab.toUpperCase()}</span></div><p>{activeTab === "colors" ? `识别到 ${colors.length} 种颜色，包含不同 JSON 表达格式。` : `识别到 ${shapes.length} 类形状，修改后立即刷新预览。`}</p></div>
-        {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><label className="picker-label">替换为<input type="color" value={color.hex} onChange={(e) => changeColor(color.hex, e.target.value.toUpperCase())} /><span>选择颜色</span></label></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> :
-        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.raw}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.raw}` === id ? "shape-row selected" : "shape-row"} onClick={() => setSelectedShape(id)}><Shape name={shape.name} /><span><strong>{shape.label}</strong><small>{shape.raw}{shape.mode === "lottie" ? " · Lottie" : ""}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到形状；支持 shape、icon、type 与 Lottie ty" />}</div>{activeShape && <div className="replace-card"><span className="replace-kicker">REPLACE ALL</span><h3>替换全部「{activeShape.raw}」</h3><div className="replacement-line"><div><Shape name={activeShape.name} /><small>当前</small></div><span>→</span><div className="shape-options">{SHAPES.filter((shape) => shape !== activeShape.name && (activeShape.mode !== "lottie" || LOTTIE_TARGET[shape])).map((shape) => <button key={shape} title={SHAPE_LABEL[shape]} onClick={() => changeShape(activeShape, shape)}><Shape name={shape} /></button>)}</div></div>{activeShape.mode === "named" && <div className="custom-replace"><input value={customShape} onChange={(event) => setCustomShape(event.target.value)} placeholder="输入新形状 / Icon 名称" onKeyDown={(event) => event.key === "Enter" && changeShape(activeShape, customShape)} /><button onClick={() => changeShape(activeShape, customShape)}>替换</button></div>}<p>这会同步更新 JSON 中 {activeShape.count} 个同名实例。</p></div>}</div>}
+      <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><div className="rail-note"><span>↗</span><p>只识别命名组、图层和组件，不包含圆形、矩形或路径图元。</p></div></aside>
+      <section className="editor-panel"><div className="section-head"><div><span className="index">0{activeTab === "colors" ? "1" : "2"}</span><h2>{activeTab === "colors" ? "颜色" : "组合形状"}</h2><span className="en">{activeTab === "colors" ? "COLORS" : "GROUPS"}</span></div><p>{activeTab === "colors" ? `识别到 ${colors.length} 种颜色；编辑窗口会保持开启。` : `识别到 ${shapes.length} 个命名组合，可用另一个组合整体替换。`}</p></div>
+        {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><button className="picker-button" onClick={() => setColorEditor({ current: color.hex, draft: color.hex, count: color.count })}><span className="picker-chip" style={{ background: color.hex }} />选择颜色</button></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> :
+        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => setSelectedShape(id)}><ComposedMark /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div>{activeShape && <div className="replace-card"><span className="replace-kicker">REPLACE GROUP</span><h3>替换全部「{activeShape.name}」</h3><div className="composed-current"><ComposedMark /><span><small>当前组合</small><strong>{activeShape.name}</strong></span></div><div className="composed-options">{shapes.filter((shape) => shape.name !== activeShape.name).map((shape) => <button key={`${shape.mode}:${shape.name}`} onClick={() => changeShape(activeShape, shape.name)}><ComposedMark /><span>{shape.name}</span><b>替换为此组合 →</b></button>)}</div><div className="custom-replace"><input value={customShape} onChange={(event) => setCustomShape(event.target.value)} placeholder="仅重命名为…" onKeyDown={(event) => event.key === "Enter" && changeShape(activeShape, customShape)} /><button onClick={() => changeShape(activeShape, customShape)}>重命名</button></div><p>选择已识别组合会替换完整结构，并保留原实例的位置与变换。</p></div>}</div>}
       </section>
       <aside className="json-panel"><div className="panel-tabs"><button className={inspectorTab === "preview" ? "active" : ""} onClick={() => setInspectorTab("preview")}><span className="status-dot" />视觉预览</button><button className={inspectorTab === "json" ? "active" : ""} onClick={() => setInspectorTab("json")}>实时 JSON</button></div>{inspectorTab === "preview" ? <div className="preview-panel"><div className="preview-head"><span>{isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS · {shapes.length} SHAPES</b></div><VisualPreview data={data} colors={colors} shapes={shapes} /><div className="preview-foot">修改颜色或形状后自动刷新</div></div> : <><div className="json-head"><div><span className="status-dot" /> 已同步</div><button onClick={() => navigator.clipboard.writeText(jsonText).then(() => setToast("JSON 已复制"))}>复制</button></div><pre>{jsonText.split("\n").map((line, i) => <code key={i}><span>{String(i + 1).padStart(2, "0")}</span>{line}</code>)}</pre><div className="json-foot"><span>{jsonText.split("\n").length} 行</span><span>UTF-8</span></div></>}</aside>
     </section>
+    {colorEditor && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="颜色编辑器"><div className="color-dialog"><header><div><span className="eyebrow">COLOR EDITOR</span><h3>替换颜色</h3></div><button onClick={() => setColorEditor(null)} aria-label="关闭颜色编辑器">×</button></header><div className="color-dialog-main"><label className="large-picker" style={{ background: colorEditor.current }}><input type="color" value={colorEditor.current} onChange={(event) => changeColor(event.target.value)} /><span>点击选择色彩</span></label><div className="color-values"><label>HEX 色值</label><div><input value={colorEditor.draft} onChange={(event) => setColorEditor({ ...colorEditor, draft: event.target.value.toUpperCase() })} /><button onClick={() => changeColor(colorEditor.draft)}>应用</button></div><small>将同步修改 {colorEditor.count} 个引用，窗口不会自动关闭。</small></div></div><div className="quick-colors">{["#171717", "#FFFFFF", "#7557E8", "#FF6B4A", "#FFCD56", "#3AA16E"].map((hex) => <button key={hex} style={{ background: hex }} onClick={() => changeColor(hex)} aria-label={`选择 ${hex}`} />)}</div><footer><span>修改已实时写入预览和 JSON</span><button onClick={() => setColorEditor(null)}>关闭</button></footer></div></div>}
     <div className="toast" aria-live="polite"><span>✓</span>{toast}</div>
   </main>;
 }
