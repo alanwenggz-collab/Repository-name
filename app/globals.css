@@ -90,12 +90,29 @@ h2 { font-family:Georgia,"Noto Serif SC",serif; font-size:28px; margin:0; font-w
 .composed-current small,.composed-current strong { display:block; }
 .composed-current small { font:8px "Courier New",monospace; color:#777; text-transform:uppercase; margin-bottom:6px; }
 .composed-current strong { color:#fff; font-size:12px; }
+.composed-current>b { margin-left:auto; color:#8f8f8f; font:8px "Courier New",monospace; font-weight:400; white-space:nowrap; }
+.replacement-upload { width:100%; margin-top:12px; min-height:68px; border:1px dashed #615b72; background:#211f27; color:#fff; padding:12px; display:grid; grid-template-columns:36px 1fr auto; align-items:center; gap:11px; text-align:left; cursor:pointer; }
+.replacement-upload:hover { border-color:#a991ff; background:#292532; }
+.replacement-upload-icon { width:36px; height:36px; display:grid; place-items:center; border:1px solid #615b72; color:#a991ff; font-size:18px; }
+.replacement-upload small,.replacement-upload strong { display:block; }
+.replacement-upload small { margin-bottom:5px; color:#888; font:8px "Courier New",monospace; text-transform:uppercase; letter-spacing:.6px; }
+.replacement-upload strong { max-width:175px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
+.replacement-upload>b { color:#a991ff; font-size:9px; white-space:nowrap; }
+.replacement-error { margin-top:10px; padding:10px 11px; border:1px solid #844646; background:#321f1f; color:#f1b3b3; font-size:9px; line-height:1.5; }
+.replacement-summary { margin-top:16px; display:flex; align-items:center; justify-content:space-between; color:#8f8f8f; font-size:9px; }
+.replacement-summary b { min-width:24px; padding:3px 6px; background:#302a43; color:#a991ff; text-align:center; font:9px "Courier New",monospace; }
 .composed-options { margin-top:12px; display:grid; gap:6px; max-height:170px; overflow:auto; }
 .composed-options button { border:1px solid #3c3c3c; background:#282828; color:#bbb; min-height:48px; padding:8px 10px; display:grid; grid-template-columns:30px 1fr auto; align-items:center; gap:8px; text-align:left; cursor:pointer; }
 .composed-options button:hover { border-color:#a991ff; color:#fff; }
+.composed-options button.selected { border-color:#a991ff; background:#352d4d; color:#fff; box-shadow:inset 3px 0 #a991ff; }
 .composed-options .composed-mark { width:26px; height:26px; color:#a991ff; transform:scale(.75); transform-origin:left center; }
 .composed-options span { font-size:10px; overflow:hidden; text-overflow:ellipsis; }
 .composed-options b { font:7px "Courier New",monospace; color:#888; font-weight:400; }
+.replacement-options { max-height:148px; }
+.replacement-empty { border:1px solid #3c3c3c; padding:14px; color:#888; font-size:9px; line-height:1.5; }
+.apply-replacement { width:100%; min-height:42px; margin-top:12px; border:1px solid #a991ff; background:var(--violet); color:#fff; font-size:10px; font-weight:700; cursor:pointer; }
+.apply-replacement:hover { background:#684bcf; }
+.apply-replacement:active { transform:translateY(1px); }
 .custom-replace { display:grid; grid-template-columns:1fr 58px; margin-top:20px; }
 .custom-replace input { min-width:0; height:38px; border:1px solid #444; border-right:0; background:#242424; color:#fff; padding:0 11px; font-size:10px; outline:none; }
 .custom-replace input:focus { border-color:#a991ff; }

@@ -143,14 +143,14 @@ function replaceColor(data: unknown, fromHex: string, toHex: string, key = "root
 
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)); }
 
-function findShapeTemplate(data: unknown, target: string, parentKey = "root"): Record<string, unknown> | null {
+function findShapeTemplate(data: unknown, target: string, targetMode?: ShapeInfo["mode"], parentKey = "root"): Record<string, unknown> | null {
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const descriptor = composedDescriptor(data, parentKey);
-    if (descriptor?.name === target && descriptor.mode !== "reference") return data as Record<string, unknown>;
+    if (descriptor?.name === target && descriptor.mode !== "reference" && (!targetMode || descriptor.mode === targetMode)) return data as Record<string, unknown>;
     for (const [childKey, child] of Object.entries(data as Record<string, unknown>)) {
-      const found = findShapeTemplate(child, target, childKey); if (found) return found;
+      const found = findShapeTemplate(child, target, targetMode, childKey); if (found) return found;
     }
-  } else if (Array.isArray(data)) for (const child of data) { const found = findShapeTemplate(child, target, parentKey); if (found) return found; }
+  } else if (Array.isArray(data)) for (const child of data) { const found = findShapeTemplate(child, target, targetMode, parentKey); if (found) return found; }
   return null;
 }
 
@@ -222,15 +222,22 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"colors" | "shapes">("colors");
   const [inspectorTab, setInspectorTab] = useState<"preview" | "json">("preview");
   const [selectedShape, setSelectedShape] = useState("");
-  const [customShape, setCustomShape] = useState("");
+  const [replacementData, setReplacementData] = useState<unknown>(null);
+  const [replacementFileName, setReplacementFileName] = useState("");
+  const [selectedReplacement, setSelectedReplacement] = useState("");
+  const [replacementError, setReplacementError] = useState("");
   const [colorEditor, setColorEditor] = useState<{ current: string; draft: string; count: number } | null>(null);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("已识别示例 JSON");
   const fileRef = useRef<HTMLInputElement>(null);
+  const replacementFileRef = useRef<HTMLInputElement>(null);
   const colors = useMemo(() => scanColors(data), [data]);
   const shapes = useMemo(() => scanShapes(data), [data]);
+  const replacementShapes = useMemo(() => replacementData ? scanShapes(replacementData) : [], [replacementData]);
   const jsonText = useMemo(() => JSON.stringify(data, null, 2), [data]);
   const activeShape = shapes.find((item) => `${item.mode}:${item.name}` === selectedShape) || shapes[0];
+  const compatibleReplacementShapes = activeShape ? replacementShapes.filter((item) => item.mode === activeShape.mode) : [];
+  const activeReplacement = compatibleReplacementShapes.find((item) => `${item.mode}:${item.name}` === selectedReplacement) || compatibleReplacementShapes[0];
 
   const loadFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; if (!file) return;
@@ -242,14 +249,33 @@ export default function Home() {
     event.target.value = "";
   };
 
+  const loadReplacementFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]; if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const foundShapes = scanShapes(parsed);
+      if (!foundShapes.length) {
+        setReplacementError("替换文件中没有识别到命名组合。请上传包含组合形状、Lottie 图层或组件的 JSON。");
+        return;
+      }
+      setReplacementData(parsed); setReplacementFileName(file.name); setReplacementError("");
+      setSelectedReplacement(`${foundShapes[0].mode}:${foundShapes[0].name}`);
+      setToast(`替换文件已识别：${foundShapes.length} 个组合形状`);
+    } catch { setReplacementError("无法解析替换文件，请检查 JSON 格式后重试。"); }
+    finally { event.target.value = ""; }
+  };
+
   const changeColor = (to: string) => {
     if (!colorEditor || !/^#[0-9A-F]{6}$/i.test(to)) return;
     const next = to.toUpperCase(); const from = colorEditor.current;
     setData((current: unknown) => replaceColor(current, from, next)); setColorEditor({ ...colorEditor, current: next, draft: next }); setInspectorTab("preview"); setToast(`已替换 ${from} 的全部引用`);
   };
-  const changeShape = (from: ShapeInfo, to: string) => {
-    if (!to.trim()) return;
-    setData((current: unknown) => replaceShape(current, from, to.trim(), findShapeTemplate(current, to.trim()))); setSelectedShape(""); setCustomShape(""); setInspectorTab("preview"); setToast(`已整体替换 ${from.count} 个「${from.name}」组合形状`);
+  const changeShapeFromUpload = (from: ShapeInfo, replacement: ShapeInfo) => {
+    if (!replacementData) return;
+    const template = replacement.mode === "reference" ? null : findShapeTemplate(replacementData, replacement.name, replacement.mode);
+    if (replacement.mode !== "reference" && !template) { setReplacementError("无法读取这个替换形状的完整结构，请尝试上传其他 JSON。"); return; }
+    setData((current: unknown) => replaceShape(current, from, replacement.name, template)); setInspectorTab("preview");
+    setToast(`已使用上传的「${replacement.name}」替换 ${from.count} 个「${from.name}」`);
   };
   const download = () => { const blob = new Blob([jsonText], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = fileName.replace(/\.json$/i, "") + "-edited.json"; a.click(); URL.revokeObjectURL(url); setToast("修改后的 JSON 已下载"); };
 
@@ -259,9 +285,9 @@ export default function Home() {
     {error && <div className="error" role="alert">{error}</div>}
     <section className="workspace">
       <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><div className="rail-note"><span>↗</span><p>只识别命名组、图层和组件，不包含圆形、矩形或路径图元。</p></div></aside>
-      <section className="editor-panel"><div className="section-head"><div><span className="index">0{activeTab === "colors" ? "1" : "2"}</span><h2>{activeTab === "colors" ? "颜色" : "组合形状"}</h2><span className="en">{activeTab === "colors" ? "COLORS" : "GROUPS"}</span></div><p>{activeTab === "colors" ? `识别到 ${colors.length} 种颜色；编辑窗口会保持开启。` : `识别到 ${shapes.length} 个命名组合，可用另一个组合整体替换。`}</p></div>
+      <section className="editor-panel"><div className="section-head"><div><span className="index">0{activeTab === "colors" ? "1" : "2"}</span><h2>{activeTab === "colors" ? "颜色" : "组合形状"}</h2><span className="en">{activeTab === "colors" ? "COLORS" : "GROUPS"}</span></div><p>{activeTab === "colors" ? `识别到 ${colors.length} 种颜色；编辑窗口会保持开启。` : `选择主文件中的组合，再上传外部 JSON 作为替换来源。`}</p></div>
         {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><button className="picker-button" onClick={() => setColorEditor({ current: color.hex, draft: color.hex, count: color.count })}><span className="picker-chip" style={{ background: color.hex }} />选择颜色</button></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> :
-        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => setSelectedShape(id)}><ComposedMark /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div>{activeShape && <div className="replace-card"><span className="replace-kicker">REPLACE GROUP</span><h3>替换全部「{activeShape.name}」</h3><div className="composed-current"><ComposedMark /><span><small>当前组合</small><strong>{activeShape.name}</strong></span></div><div className="composed-options">{shapes.filter((shape) => shape.name !== activeShape.name).map((shape) => <button key={`${shape.mode}:${shape.name}`} onClick={() => changeShape(activeShape, shape.name)}><ComposedMark /><span>{shape.name}</span><b>替换为此组合 →</b></button>)}</div><div className="custom-replace"><input value={customShape} onChange={(event) => setCustomShape(event.target.value)} placeholder="仅重命名为…" onKeyDown={(event) => event.key === "Enter" && changeShape(activeShape, customShape)} /><button onClick={() => changeShape(activeShape, customShape)}>重命名</button></div><p>选择已识别组合会替换完整结构，并保留原实例的位置与变换。</p></div>}</div>}
+        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => { setSelectedShape(id); setSelectedReplacement(""); }}><ComposedMark /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div>{activeShape && <div className="replace-card"><span className="replace-kicker">EXTERNAL REPLACEMENT</span><h3>替换全部「{activeShape.name}」</h3><div className="composed-current"><ComposedMark /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}><span className="replacement-upload-icon">＋</span><span><small>{replacementFileName ? "替换形状文件" : "上传替换形状"}</small><strong>{replacementFileName || "选择另一个 JSON 文件"}</strong></span><b>{replacementFileName ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="application/json,.json" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{replacementData !== null && <><div className="replacement-summary"><span>可用的同类型组合</span><b>{compatibleReplacementShapes.length}</b></div><div className="composed-options replacement-options">{compatibleReplacementShapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeReplacement && `${activeReplacement.mode}:${activeReplacement.name}` === id ? "selected" : ""} onClick={() => setSelectedReplacement(id)}><ComposedMark /><span>{shape.name}</span><b>{shape.mode.replace("lottie-", "Lottie ")}</b></button>; })}{!compatibleReplacementShapes.length && <div className="replacement-empty">替换文件里没有与当前目标相同类型的组合形状。</div>}</div>{activeReplacement && <button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape, activeReplacement)}>使用「{activeReplacement.name}」替换全部</button>}</>}<p>替换结构来自你上传的外部 JSON，并保留主文件中每个实例的位置与变换。所有文件只在本地浏览器中处理。</p></div>}</div>}
       </section>
       <aside className="json-panel"><div className="panel-tabs"><button className={inspectorTab === "preview" ? "active" : ""} onClick={() => setInspectorTab("preview")}><span className="status-dot" />视觉预览</button><button className={inspectorTab === "json" ? "active" : ""} onClick={() => setInspectorTab("json")}>实时 JSON</button></div>{inspectorTab === "preview" ? <div className="preview-panel"><div className="preview-head"><span>{isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS · {shapes.length} SHAPES</b></div><VisualPreview data={data} colors={colors} shapes={shapes} /><div className="preview-foot">修改颜色或形状后自动刷新</div></div> : <><div className="json-head"><div><span className="status-dot" /> 已同步</div><button onClick={() => navigator.clipboard.writeText(jsonText).then(() => setToast("JSON 已复制"))}>复制</button></div><pre>{jsonText.split("\n").map((line, i) => <code key={i}><span>{String(i + 1).padStart(2, "0")}</span>{line}</code>)}</pre><div className="json-foot"><span>{jsonText.split("\n").length} 行</span><span>UTF-8</span></div></>}</aside>
     </section>
