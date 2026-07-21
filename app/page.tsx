@@ -6,6 +6,7 @@ import type { AnimationItem } from "lottie-web";
 type ShapeName = "circle" | "square" | "triangle" | "star" | "heart" | "hexagon" | "path";
 type ColorInfo = { hex: string; label: string; count: number };
 type ShapeInfo = { name: string; count: number; mode: "lottie-group" | "lottie-layer" | "component" | "reference" };
+type UploadedSvg = { fileName: string; name: string; preview: string; raw: string; group: Record<string, unknown>; partCount: number };
 
 const SAMPLE = {
   name: "summer-campaign",
@@ -90,7 +91,7 @@ function scanColors(data: unknown) {
 function composedDescriptor(value: unknown, parentKey = "root"): Omit<ShapeInfo, "count"> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const object = value as Record<string, unknown>;
-  if (object.ty === "gr" && typeof object.nm === "string" && object.nm.trim()) return { name: object.nm.trim(), mode: "lottie-group" };
+  if (object.ty === "gr" && typeof object.nm === "string" && object.nm.trim() && !object.nm.startsWith("__jsonicle_svg_part_")) return { name: object.nm.trim(), mode: "lottie-group" };
   if (parentKey === "layers" && typeof object.nm === "string" && object.nm.trim()) return { name: object.nm.trim(), mode: "lottie-layer" };
   const name = [object.name, object.nm, object.componentName].find((item) => typeof item === "string" && item.trim()) as string | undefined;
   const hasParts = ["children", "items", "elements", "shapes", "components", "paths"].some((key) => Array.isArray(object[key]) && (object[key] as unknown[]).length > 0);
@@ -143,6 +144,77 @@ function replaceColor(data: unknown, fromHex: string, toHex: string, key = "root
 
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)); }
 
+function lottieTransform() {
+  return { ty: "tr", p: { a: 0, k: [0, 0] }, a: { a: 0, k: [0, 0] }, s: { a: 0, k: [100, 100] }, r: { a: 0, k: 0 }, o: { a: 0, k: 100 }, sk: { a: 0, k: 0 }, sa: { a: 0, k: 0 } };
+}
+
+function rgbArray(value: string) {
+  const hex = parseCssColor(value) || "#171717";
+  return [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255, 1];
+}
+
+async function svgToLottieGroup(svgText: string, name: string) {
+  const parsed = new DOMParser().parseFromString(svgText, "image/svg+xml");
+  if (parsed.querySelector("parsererror") || parsed.documentElement.tagName.toLowerCase() !== "svg") throw new Error("INVALID_SVG");
+  const imported = document.importNode(parsed.documentElement, true) as unknown as SVGSVGElement;
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;left:-10000px;top:0;width:1000px;height:1000px;visibility:hidden;pointer-events:none";
+  imported.style.width = "1000px"; imported.style.height = "1000px"; host.appendChild(imported); document.body.appendChild(host);
+  try {
+    const elements = [...imported.querySelectorAll<SVGGeometryElement>("path,rect,circle,ellipse,polygon,polyline,line")];
+    if (!elements.length) throw new Error("NO_GEOMETRY");
+    const sampled = elements.map((element, index) => {
+      const length = element.getTotalLength();
+      if (!Number.isFinite(length) || length <= 0) return null;
+      const tag = element.tagName.toLowerCase();
+      const closed = ["rect", "circle", "ellipse", "polygon"].includes(tag) || (tag === "path" && /z\s*$/i.test(element.getAttribute("d") || ""));
+      const count = Math.min(96, Math.max(closed ? 12 : 8, Math.ceil(length / 4)));
+      const matrix = element.getCTM();
+      const vertices = Array.from({ length: count }, (_, pointIndex) => {
+        const distance = closed ? length * pointIndex / count : length * pointIndex / Math.max(count - 1, 1);
+        const point = element.getPointAtLength(distance);
+        const transformed = matrix ? new DOMPoint(point.x, point.y).matrixTransform(matrix) : point;
+        return [transformed.x, transformed.y];
+      });
+      const style = getComputedStyle(element);
+      return { index, vertices, closed, fill: style.fill, fillOpacity: Number(style.fillOpacity || 1), stroke: style.stroke, strokeOpacity: Number(style.strokeOpacity || 1), strokeWidth: Number.parseFloat(style.strokeWidth || "1") || 1 };
+    }).filter((item): item is NonNullable<typeof item> => !!item);
+    if (!sampled.length) throw new Error("NO_GEOMETRY");
+    const points = sampled.flatMap((item) => item.vertices); const xs = points.map((point) => point[0]); const ys = points.map((point) => point[1]);
+    const minX = Math.min(...xs); const maxX = Math.max(...xs); const minY = Math.min(...ys); const maxY = Math.max(...ys);
+    const scale = 100 / Math.max(maxX - minX || 1, maxY - minY || 1); const centerX = (minX + maxX) / 2; const centerY = (minY + maxY) / 2;
+    const parts = sampled.map((item) => {
+      const vertices = item.vertices.map(([x, y]) => [(x - centerX) * scale, (y - centerY) * scale]);
+      const zeroTangents = vertices.map(() => [0, 0]);
+      const items: Record<string, unknown>[] = [{ ty: "sh", nm: `Path ${item.index + 1}`, ks: { a: 0, k: { i: zeroTangents, o: zeroTangents, v: vertices, c: item.closed } }, hd: false }];
+      if (item.fill !== "none") items.push({ ty: "fl", c: { a: 0, k: rgbArray(item.fill) }, o: { a: 0, k: Math.max(0, Math.min(100, item.fillOpacity * 100)) }, r: 1, hd: false });
+      if (item.stroke !== "none" && item.strokeWidth > 0) items.push({ ty: "st", c: { a: 0, k: rgbArray(item.stroke) }, o: { a: 0, k: Math.max(0, Math.min(100, item.strokeOpacity * 100)) }, w: { a: 0, k: item.strokeWidth * scale }, lc: 2, lj: 2, hd: false });
+      items.push(lottieTransform());
+      return { ty: "gr", nm: `__jsonicle_svg_part_${item.index + 1}`, it: items, hd: false };
+    });
+    return { ty: "gr", nm: name, it: [...parts, lottieTransform()], hd: false, __jsonicleSvg: true } as Record<string, unknown>;
+  } finally { host.remove(); }
+}
+
+function collectPathVertices(value: unknown, output: number[][] = []) {
+  if (Array.isArray(value)) value.forEach((item) => collectPathVertices(item, output));
+  else if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>; const ks = object.ks as Record<string, unknown> | undefined; const k = ks?.k as Record<string, unknown> | undefined;
+    if (object.ty === "sh" && Array.isArray(k?.v)) (k.v as unknown[]).forEach((point) => { if (Array.isArray(point) && point.length >= 2) output.push(point as number[]); });
+    Object.values(object).forEach((item) => collectPathVertices(item, output));
+  }
+  return output;
+}
+
+function fitSvgPaths(template: Record<string, unknown>, current: Record<string, unknown>) {
+  const source = collectPathVertices(template); const target = collectPathVertices(current);
+  if (!source.length || !target.length) return;
+  const bounds = (points: number[][]) => ({ minX: Math.min(...points.map((p) => p[0])), maxX: Math.max(...points.map((p) => p[0])), minY: Math.min(...points.map((p) => p[1])), maxY: Math.max(...points.map((p) => p[1])) });
+  const a = bounds(source); const b = bounds(target); const sourceW = a.maxX - a.minX || 1; const sourceH = a.maxY - a.minY || 1; const targetW = b.maxX - b.minX || 100; const targetH = b.maxY - b.minY || 100;
+  const scale = Math.min(targetW / sourceW, targetH / sourceH); const sourceCX = (a.minX + a.maxX) / 2; const sourceCY = (a.minY + a.maxY) / 2; const targetCX = (b.minX + b.maxX) / 2; const targetCY = (b.minY + b.maxY) / 2;
+  source.forEach((point) => { point[0] = (point[0] - sourceCX) * scale + targetCX; point[1] = (point[1] - sourceCY) * scale + targetCY; });
+}
+
 function findShapeTemplate(data: unknown, target: string, targetMode?: ShapeInfo["mode"], parentKey = "root"): Record<string, unknown> | null {
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const descriptor = composedDescriptor(data, parentKey);
@@ -156,6 +228,7 @@ function findShapeTemplate(data: unknown, target: string, targetMode?: ShapeInfo
 
 function transplantShape(current: Record<string, unknown>, template: Record<string, unknown>, mode: ShapeInfo["mode"]) {
   const next = clone(template);
+  if (next.__jsonicleSvg) { fitSvgPaths(next, current); delete next.__jsonicleSvg; }
   if (mode === "lottie-group" && Array.isArray(current.it) && Array.isArray(next.it)) {
     const transform = (current.it as Record<string, unknown>[]).find((item) => item.ty === "tr");
     if (transform) next.it = (next.it as Record<string, unknown>[]).map((item) => item.ty === "tr" ? clone(transform) : item);
@@ -222,9 +295,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"colors" | "shapes">("colors");
   const [inspectorTab, setInspectorTab] = useState<"preview" | "json">("preview");
   const [selectedShape, setSelectedShape] = useState("");
-  const [replacementData, setReplacementData] = useState<unknown>(null);
-  const [replacementFileName, setReplacementFileName] = useState("");
-  const [selectedReplacement, setSelectedReplacement] = useState("");
+  const [uploadedSvg, setUploadedSvg] = useState<UploadedSvg | null>(null);
   const [replacementError, setReplacementError] = useState("");
   const [colorEditor, setColorEditor] = useState<{ current: string; draft: string; count: number } | null>(null);
   const [error, setError] = useState("");
@@ -233,11 +304,8 @@ export default function Home() {
   const replacementFileRef = useRef<HTMLInputElement>(null);
   const colors = useMemo(() => scanColors(data), [data]);
   const shapes = useMemo(() => scanShapes(data), [data]);
-  const replacementShapes = useMemo(() => replacementData ? scanShapes(replacementData) : [], [replacementData]);
   const jsonText = useMemo(() => JSON.stringify(data, null, 2), [data]);
   const activeShape = shapes.find((item) => `${item.mode}:${item.name}` === selectedShape) || shapes[0];
-  const compatibleReplacementShapes = activeShape ? replacementShapes.filter((item) => item.mode === activeShape.mode) : [];
-  const activeReplacement = compatibleReplacementShapes.find((item) => `${item.mode}:${item.name}` === selectedReplacement) || compatibleReplacementShapes.find((item) => item.name === activeShape?.name) || compatibleReplacementShapes[0];
 
   const loadFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; if (!file) return;
@@ -252,16 +320,14 @@ export default function Home() {
   const loadReplacementFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; if (!file) return;
     try {
-      const parsed = JSON.parse(await file.text());
-      const foundShapes = scanShapes(parsed);
-      if (!foundShapes.length) {
-        setReplacementError("替换文件中没有识别到命名组合。请上传包含组合形状、Lottie 图层或组件的 JSON。");
-        return;
-      }
-      setReplacementData(parsed); setReplacementFileName(file.name); setReplacementError("");
-      setSelectedReplacement("");
-      setToast(`替换文件已识别：${foundShapes.length} 个组合形状`);
-    } catch { setReplacementError("无法解析替换文件，请检查 JSON 格式后重试。"); }
+      const raw = await file.text(); const name = file.name.replace(/\.svg$/i, "") || "uploaded-shape";
+      const group = await svgToLottieGroup(raw, name); const partCount = Array.isArray(group.it) ? Math.max(0, group.it.length - 1) : 0;
+      setUploadedSvg({ fileName: file.name, name, preview: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(raw)}`, raw, group, partCount }); setReplacementError("");
+      setToast(`SVG 已转换：${partCount} 个矢量部分`);
+    } catch (reason) {
+      const message = reason instanceof Error && reason.message === "NO_GEOMETRY" ? "SVG 中没有找到可转换的路径或基础图形。" : "无法读取这个 SVG，请确认文件内容完整后重试。";
+      setReplacementError(message);
+    }
     finally { event.target.value = ""; }
   };
 
@@ -270,12 +336,15 @@ export default function Home() {
     const next = to.toUpperCase(); const from = colorEditor.current;
     setData((current: unknown) => replaceColor(current, from, next)); setColorEditor({ ...colorEditor, current: next, draft: next }); setInspectorTab("preview"); setToast(`已替换 ${from} 的全部引用`);
   };
-  const changeShapeFromUpload = (from: ShapeInfo, replacement: ShapeInfo) => {
-    if (!replacementData) return;
-    const template = replacement.mode === "reference" ? null : findShapeTemplate(replacementData, replacement.name, replacement.mode);
-    if (replacement.mode !== "reference" && !template) { setReplacementError("无法读取这个替换形状的完整结构，请尝试上传其他 JSON。"); return; }
-    setData((current: unknown) => replaceShape(current, from, replacement.name, template)); setInspectorTab("preview");
-    setToast(`已使用上传的「${replacement.name}」替换 ${from.count} 个「${from.name}」`);
+  const changeShapeFromUpload = (from: ShapeInfo) => {
+    if (!uploadedSvg) return;
+    if (from.mode === "reference") { setReplacementError("当前目标只是外部引用，无法写入 SVG 路径。请选择组合、组件或 Lottie 图层。"); return; }
+    const group = clone(uploadedSvg.group); group.nm = from.name; group.__jsonicleSvg = true;
+    const template = from.mode === "lottie-group" ? group : from.mode === "lottie-layer"
+      ? { ty: 4, nm: from.name, shapes: [group], ks: {}, ip: 0, op: 1, st: 0, __jsonicleSvg: true }
+      : { name: from.name, componentName: from.name, type: "svg", svg: uploadedSvg.raw, items: [group], __jsonicleSvg: true };
+    setData((current: unknown) => replaceShape(current, from, from.name, template)); setInspectorTab("preview"); setReplacementError("");
+    setToast(`已使用 ${uploadedSvg.fileName} 替换 ${from.count} 个「${from.name}」`);
   };
   const download = () => { const blob = new Blob([jsonText], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = fileName.replace(/\.json$/i, "") + "-edited.json"; a.click(); URL.revokeObjectURL(url); setToast("修改后的 JSON 已下载"); };
 
@@ -285,9 +354,9 @@ export default function Home() {
     {error && <div className="error" role="alert">{error}</div>}
     <section className="workspace">
       <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><div className="rail-note"><span>↗</span><p>只识别命名组、图层和组件，不包含圆形、矩形或路径图元。</p></div></aside>
-      <section className="editor-panel"><div className="section-head"><div><span className="index">0{activeTab === "colors" ? "1" : "2"}</span><h2>{activeTab === "colors" ? "颜色" : "组合形状"}</h2><span className="en">{activeTab === "colors" ? "COLORS" : "GROUPS"}</span></div><p>{activeTab === "colors" ? `识别到 ${colors.length} 种颜色；编辑窗口会保持开启。` : `选择主文件中的组合，再上传外部 JSON 作为替换来源。`}</p></div>
+      <section className="editor-panel"><div className="section-head"><div><span className="index">0{activeTab === "colors" ? "1" : "2"}</span><h2>{activeTab === "colors" ? "颜色" : "组合形状"}</h2><span className="en">{activeTab === "colors" ? "COLORS" : "GROUPS"}</span></div><p>{activeTab === "colors" ? `识别到 ${colors.length} 种颜色；编辑窗口会保持开启。` : `选择主文件中的组合，再上传 SVG 作为新的矢量结构。`}</p></div>
         {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><button className="picker-button" onClick={() => setColorEditor({ current: color.hex, draft: color.hex, count: color.count })}><span className="picker-chip" style={{ background: color.hex }} />选择颜色</button></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> :
-        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => { setSelectedShape(id); setSelectedReplacement(""); }}><ComposedMark /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div>{activeShape && <div className="replace-card"><span className="replace-kicker">EXTERNAL REPLACEMENT</span><h3>替换全部「{activeShape.name}」</h3><div className="composed-current"><ComposedMark /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}><span className="replacement-upload-icon">＋</span><span><small>{replacementFileName ? "替换形状文件" : "上传替换形状"}</small><strong>{replacementFileName || "选择另一个 JSON 文件"}</strong></span><b>{replacementFileName ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="application/json,.json" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{replacementData !== null && <><div className="replacement-summary"><span>可用的同类型组合</span><b>{compatibleReplacementShapes.length}</b></div><div className="composed-options replacement-options">{compatibleReplacementShapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeReplacement && `${activeReplacement.mode}:${activeReplacement.name}` === id ? "selected" : ""} onClick={() => setSelectedReplacement(id)}><ComposedMark /><span>{shape.name}</span><b>{shape.name === activeShape.name ? "同名匹配" : shape.mode.replace("lottie-", "Lottie ")}</b></button>; })}{!compatibleReplacementShapes.length && <div className="replacement-empty">替换文件里没有与当前目标相同类型的组合形状。</div>}</div>{activeReplacement && <button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape, activeReplacement)}>使用「{activeReplacement.name}」替换全部</button>}</>}<p>替换结构来自你上传的外部 JSON，并保留主文件中每个实例的位置与变换。所有文件只在本地浏览器中处理。</p></div>}</div>}
+        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => setSelectedShape(id)}><ComposedMark /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div>{activeShape && <div className="replace-card"><span className="replace-kicker">SVG REPLACEMENT</span><h3>替换全部「{activeShape.name}」</h3><div className="composed-current"><ComposedMark /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}>{uploadedSvg ? <img className="replacement-svg-preview" src={uploadedSvg.preview} alt="上传的 SVG 预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedSvg ? "已转换为矢量路径" : "上传替换形状"}</small><strong>{uploadedSvg?.fileName || "选择 SVG 文件"}</strong></span><b>{uploadedSvg ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="image/svg+xml,.svg" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{uploadedSvg && <><div className="replacement-summary"><span>已转换的矢量部分</span><b>{uploadedSvg.partCount}</b></div><button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape)} disabled={activeShape.mode === "reference"}>使用这个 SVG 替换全部同名形状</button>{activeShape.mode === "reference" && <div className="replacement-empty">当前目标是外部引用，不能直接写入 SVG 路径。</div>}</>}<p>SVG 会转换为 JSON 内的矢量路径，同时保留主文件中同名实例的位置、缩放和动画变换。文件只在本地浏览器中处理。</p></div>}</div>}
       </section>
       <aside className="json-panel"><div className="panel-tabs"><button className={inspectorTab === "preview" ? "active" : ""} onClick={() => setInspectorTab("preview")}><span className="status-dot" />视觉预览</button><button className={inspectorTab === "json" ? "active" : ""} onClick={() => setInspectorTab("json")}>实时 JSON</button></div>{inspectorTab === "preview" ? <div className="preview-panel"><div className="preview-head"><span>{isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS · {shapes.length} SHAPES</b></div><VisualPreview data={data} colors={colors} shapes={shapes} /><div className="preview-foot">修改颜色或形状后自动刷新</div></div> : <><div className="json-head"><div><span className="status-dot" /> 已同步</div><button onClick={() => navigator.clipboard.writeText(jsonText).then(() => setToast("JSON 已复制"))}>复制</button></div><pre>{jsonText.split("\n").map((line, i) => <code key={i}><span>{String(i + 1).padStart(2, "0")}</span>{line}</code>)}</pre><div className="json-foot"><span>{jsonText.split("\n").length} 行</span><span>UTF-8</span></div></>}</aside>
     </section>
