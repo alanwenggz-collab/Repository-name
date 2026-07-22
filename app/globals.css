@@ -218,6 +218,11 @@ h2 { font-family:inherit; font-size:28px; margin:0; font-weight:500; }
 .color-dialog footer { min-height:60px; border-top:1px solid var(--line); padding:10px 22px; display:flex; align-items:center; justify-content:space-between; }
 .color-dialog footer span { color:var(--muted); font-size:10px; }
 .color-dialog footer button { min-width:92px; height:38px; border:1px solid var(--ink); background:var(--ink); color:#fff; font-size:10px; font-weight:700; cursor:pointer; }
+.asset-dialog { width:min(560px,100%); max-height:92vh; overflow:auto; }
+.asset-dialog-body { padding:22px 22px 8px; }
+.asset-dialog .replace-card { min-height:0; padding:0; border:0; background:transparent; }
+.asset-dialog .replace-card p { margin:18px 0 4px; }
+.asset-dialog footer { position:sticky; bottom:0; background:var(--surface); }
 .toast { position:fixed; z-index:30; bottom:20px; left:50%; transform:translateX(-50%); background:#fff; border:1px solid var(--line); border-bottom:2px solid var(--ink); box-shadow:0 8px 28px rgba(0,0,0,.12); padding:10px 15px; font-size:10px; display:flex; align-items:center; gap:9px; }
 .toast span { color:#2c9a64; font-weight:bold; }
 .empty { grid-column:1/-1; min-height:180px; display:grid; place-items:center; align-content:center; color:var(--muted); background:#fff; }
