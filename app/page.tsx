@@ -11,6 +11,7 @@ type ImageInfo = { id: string; name: string; value: string; preview: string; cou
 type UploadedImage = { fileName: string; dataUrl: string; width: number; height: number; size: number };
 type CompressionResult = { text: string; originalSize: number; compressedSize: number; percentage: number };
 type MediaConversionResult = { text: string; kind: string; fileCount: number; originalSize: number; payloadSize: number; jsonSize: number; percentage: number; outputName: string };
+type MediaFrame = { dataUrl: string; width: number; height: number; duration: number };
 
 const SAMPLE = {
   name: "summer-campaign",
@@ -196,6 +197,64 @@ function readImageFile(file: File): Promise<UploadedImage> {
       image.onload = () => resolve({ fileName: file.name, dataUrl, width: image.naturalWidth, height: image.naturalHeight, size: file.size }); image.src = dataUrl;
     };
   });
+}
+
+function waitForEvent(target: EventTarget, eventName: string) {
+  return new Promise<void>((resolve, reject) => {
+    const done = () => { cleanup(); resolve(); }; const failed = () => { cleanup(); reject(new Error("MEDIA_DECODE_FAILED")); };
+    const cleanup = () => { target.removeEventListener(eventName, done); target.removeEventListener("error", failed); };
+    target.addEventListener(eventName, done, { once: true }); target.addEventListener("error", failed, { once: true });
+  });
+}
+
+function renderFrame(source: CanvasImageSource, sourceWidth: number, sourceHeight: number, duration = 1000 / 12): MediaFrame {
+  const maxSide = 720; const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * scale)); const height = Math.max(1, Math.round(sourceHeight * scale));
+  const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+  const context = canvas.getContext("2d", { alpha: true }); if (!context) throw new Error("CANVAS_FAILED");
+  context.drawImage(source, 0, 0, width, height);
+  return { dataUrl: canvas.toDataURL("image/webp", .72), width, height, duration: Math.max(16, duration) };
+}
+
+async function decodeStill(file: File) {
+  const source = await readImageFile(file); const image = new Image(); image.src = source.dataUrl;
+  if (!image.complete) await waitForEvent(image, "load");
+  return renderFrame(image, image.naturalWidth, image.naturalHeight);
+}
+
+async function decodeAnimatedImage(file: File) {
+  const Decoder = (window as unknown as { ImageDecoder?: new (options: { data: ArrayBuffer; type: string }) => { tracks: { ready: Promise<void>; selectedTrack?: { frameCount?: number } }; decode(options: { frameIndex: number }): Promise<{ image: VideoFrame }>; close(): void } }).ImageDecoder;
+  if (!Decoder) return [await decodeStill(file)];
+  const decoder = new Decoder({ data: await file.arrayBuffer(), type: file.type || (file.name.toLowerCase().endsWith(".gif") ? "image/gif" : "image/apng") });
+  try {
+    await decoder.tracks.ready; const total = decoder.tracks.selectedTrack?.frameCount || 1; const limit = Math.min(total, 96); const step = Math.max(1, Math.floor(total / limit)); const frames: MediaFrame[] = [];
+    for (let frameIndex = 0; frameIndex < total && frames.length < limit; frameIndex += step) {
+      const { image } = await decoder.decode({ frameIndex });
+      frames.push(renderFrame(image, image.displayWidth, image.displayHeight, Number(image.duration || 83333) / 1000 * step)); image.close();
+    }
+    return frames;
+  } finally { decoder.close(); }
+}
+
+async function decodeVideo(file: File) {
+  const url = URL.createObjectURL(file); const video = document.createElement("video"); video.muted = true; video.playsInline = true; video.preload = "auto"; video.src = url;
+  try {
+    await waitForEvent(video, "loadedmetadata"); if (video.readyState < 2) await waitForEvent(video, "loadeddata"); const duration = Number.isFinite(video.duration) ? video.duration : 0; if (!duration) throw new Error("INVALID_VIDEO");
+    const total = Math.min(96, Math.max(1, Math.ceil(duration * 12))); const frames: MediaFrame[] = [];
+    for (let index = 0; index < total; index += 1) {
+      const targetTime = Math.min(duration - .001, index / 12); if (Math.abs(video.currentTime - targetTime) > .001) { video.currentTime = targetTime; await waitForEvent(video, "seeked"); }
+      frames.push(renderFrame(video, video.videoWidth, video.videoHeight));
+    }
+    return frames;
+  } finally { URL.revokeObjectURL(url); video.remove(); }
+}
+
+function framesToLottie(frames: MediaFrame[]) {
+  if (!frames.length) throw new Error("NO_FRAMES"); const fr = 12; const width = Math.max(...frames.map((frame) => frame.width)); const height = Math.max(...frames.map((frame) => frame.height));
+  const timeline = frames.flatMap((frame, frameIndex) => Array.from({ length: Math.max(1, Math.round(frame.duration / 1000 * fr)) }, () => frameIndex)).slice(0, 240);
+  const assets = frames.map((frame, index) => ({ id: `image_${index}`, w: frame.width, h: frame.height, u: "", p: frame.dataUrl, e: 1 }));
+  const layers = timeline.map((assetIndex, index) => { const frame = frames[assetIndex]; return { ddd: 0, ind: index + 1, ty: 2, nm: `Frame ${String(index + 1).padStart(3, "0")}`, refId: `image_${assetIndex}`, sr: 1, ks: { o: { a: 0, k: 100 }, r: { a: 0, k: 0 }, p: { a: 0, k: [width / 2, height / 2, 0] }, a: { a: 0, k: [frame.width / 2, frame.height / 2, 0] }, s: { a: 0, k: [100, 100, 100] } }, ao: 0, ip: index, op: index + 1, st: index, bm: 0 }; }).reverse();
+  return { v: "5.12.2", fr, ip: 0, op: timeline.length, w: width, h: height, nm: "Jsonable Media Conversion", ddd: 0, assets, layers, markers: [], meta: { generator: "Jsonable", sourceFrames: frames.length, playback: "lottie" } };
 }
 
 function colorForOriginal(original: unknown, hex: string): unknown {
@@ -424,7 +483,24 @@ function ImageThumb({ source, label }: { source: string; label: string }) {
   return source ? <img src={source} alt={label} /> : <span className="image-placeholder">IMG</span>;
 }
 
-function VisualPreview({ data, colors, shapes, images }: { data: unknown; colors: ColorInfo[]; shapes: ShapeInfo[]; images: ImageInfo[] }) {
+function CubeLogo() {
+  return <span className="cube-logo" aria-hidden="true"><i /><i /><i /></span>;
+}
+
+const CUBE_FACES = ["front", "back", "right", "left", "top", "bottom"];
+
+function MagicCube({ compact = false }: { compact?: boolean }) {
+  return <div className={compact ? "cube-scene compact" : "cube-scene"} aria-label="旋转的 Jsonable 魔方视觉" role="img">
+    <div className="cube-orbit cube-orbit-one" /><div className="cube-orbit cube-orbit-two" />
+    <div className="magic-cube">
+      {CUBE_FACES.map((face) => <div className={`cube-face cube-face-${face}`} key={face}>{Array.from({ length: 9 }, (_, index) => <span key={index} />)}</div>)}
+    </div>
+    {!compact && <div className="cube-caption"><span>JSON / IN MOTION</span><strong>把复杂结构，转成看得见的改变。</strong></div>}
+  </div>;
+}
+
+function VisualPreview({ data, colors, shapes, images, isDefault }: { data: unknown; colors: ColorInfo[]; shapes: ShapeInfo[]; images: ImageInfo[]; isDefault: boolean }) {
+  if (isDefault) return <div className="token-stage default-cube-stage"><MagicCube /></div>;
   const items = shapes.flatMap((shape) => Array.from({ length: Math.min(shape.count, 6) }, () => shape)).slice(0, 24);
   if (isLottie(data)) return <LottiePreview data={data} />;
   const object = data && typeof data === "object" ? data as Record<string, unknown> : {};
@@ -440,6 +516,7 @@ function VisualPreview({ data, colors, shapes, images }: { data: unknown; colors
 
 export default function Home() {
   const [data, setData] = useState<unknown>(SAMPLE);
+  const [hasUploadedFile, setHasUploadedFile] = useState(false);
   const [fileName, setFileName] = useState("summer-campaign.json");
   const [activeTab, setActiveTab] = useState<"colors" | "shapes" | "images">("colors");
   const [inspectorTab, setInspectorTab] = useState<"preview" | "json">("preview");
@@ -500,7 +577,7 @@ export default function Home() {
   const loadFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; if (!file) return;
     try {
-      const parsed = JSON.parse(await file.text()); setData(parsed); setFileName(file.name); setError(""); setSelectedShape(""); setSelectedImage(""); setUploadedSvg(null); setUploadedImage(null); setShapeEditorOpen(false); setImageEditorOpen(false); setInspectorTab("preview");
+      const parsed = JSON.parse(await file.text()); setData(parsed); setHasUploadedFile(true); setFileName(file.name); setError(""); setSelectedShape(""); setSelectedImage(""); setUploadedSvg(null); setUploadedImage(null); setShapeEditorOpen(false); setImageEditorOpen(false); setInspectorTab("preview");
       const foundColors = scanColors(parsed).length; const foundShapes = scanShapes(parsed).length; const foundImages = scanImages(parsed).length;
       setToast(`识别完成：${foundColors} 种颜色，${foundShapes} 种形状，${foundImages} 个图片资源`);
     } catch { setError("无法解析这个文件，请检查 JSON 格式后重试。"); }
@@ -514,14 +591,13 @@ export default function Home() {
     if (!allowed) { setMediaConversionError("请选择 MP4、GIF、APNG、PNG、JPG 或 WebP 文件。"); return; }
     setMediaConverting(true); setMediaConversion(null); setMediaConversionError("");
     try {
-      const packedFiles = await Promise.all(files.map(packMediaFile)); const originalSize = packedFiles.reduce((sum, file) => sum + file.originalSize, 0); const payloadSize = packedFiles.reduce((sum, file) => sum + file.packedSize, 0);
       const extension = files[0].name.split(".").pop()?.toLowerCase(); const kind = files.length > 1 ? "sequence-frames" : extension === "mp4" ? "mp4" : extension === "gif" ? "gif" : extension === "apng" || files[0].type === "image/apng" ? "apng" : "image";
-      const manifest = { format: "jsonable-media", version: 1, kind, compression: "per-file automatic", frameOrder: files.length > 1 ? "natural-filename-sort" : undefined, files: packedFiles };
-      const text = JSON.stringify(manifest); const jsonSize = new Blob([text]).size; const percentage = originalSize ? Math.max(0, (1 - payloadSize / originalSize) * 100) : 0;
+      const frames = files.length > 1 ? await Promise.all(files.slice(0, 96).map(decodeStill)) : kind === "mp4" ? await decodeVideo(files[0]) : kind === "gif" || kind === "apng" ? await decodeAnimatedImage(files[0]) : [await decodeStill(files[0])];
+      const lottie = framesToLottie(frames); const text = JSON.stringify(lottie); const jsonSize = new Blob([text]).size; const originalSize = files.reduce((sum, file) => sum + file.size, 0); const payloadSize = frames.reduce((sum, frame) => sum + Math.ceil(frame.dataUrl.length * .75), 0); const percentage = originalSize ? Math.max(0, (1 - Math.min(payloadSize, originalSize) / originalSize) * 100) : 0;
       const baseName = files.length > 1 ? "sequence-frames" : files[0].name.replace(/\.[^.]+$/, "");
-      setMediaConversion({ text, kind, fileCount: files.length, originalSize, payloadSize, jsonSize, percentage, outputName: `${baseName}-media.json` });
-      setToast(`转换完成：${files.length} 个文件已封装为 JSON`);
-    } catch { setMediaConversionError("转换失败，请减少文件数量或检查浏览器可用内存后重试。"); }
+      setMediaConversion({ text, kind, fileCount: frames.length, originalSize, payloadSize, jsonSize, percentage, outputName: `${baseName}-lottie.json` });
+      setToast(`转换完成：已生成 ${frames.length} 帧可播放 Lottie JSON`);
+    } catch { setMediaConversionError("转换失败：请确认浏览器支持该媒体编码，或缩短视频、减少序列帧后重试。"); }
     finally { setMediaConverting(false); }
   };
 
@@ -580,8 +656,8 @@ export default function Home() {
   };
 
   return <main>
-    <header className="topbar"><a className="brand" href="#" aria-label="Jsonable 首页"><span className="brand-mark">J</span><span>Jsonable</span></a><div className="top-actions"><span className="privacy"><span className="lock">◆</span>文件仅在本地处理</span><button className="button button-ghost" onClick={() => fileRef.current?.click()}>＋ 上传文件</button><button className="button button-dark" onClick={download}>下载 JSON <span>↓</span></button></div></header>
-    <section className="hero"><div><span className="eyebrow">VISUAL JSON EDITOR</span><h1>看清结构，<em>改得准确。</em></h1><p>上传 JSON，直接替换颜色、组合形状与图片资源，修改结果实时可见。</p></div><div className="hero-tools"><article className={compressionResult ? "compress-card complete" : "compress-card"}><span className="compress-copy"><small>{compressionResult ? "COMPRESSION COMPLETE" : "JSON MINIFIER"}</small><strong>{compressionResult ? `压缩后 ${formatBytes(compressionResult.compressedSize)}` : "压缩当前 JSON"}</strong><em>{compressionResult ? `原始 ${formatBytes(compressionResult.originalSize)}，减少 ${compressionResult.percentage.toFixed(1)}%` : `当前 ${formatBytes(new Blob([jsonText]).size)}，移除缩进与换行`}</em></span><button className={compressionCountdown !== null ? "compress-action running" : "compress-action"} onClick={() => { setCompressionResult(null); setCompressionCountdown(3); }} disabled={compressionCountdown !== null} aria-label="压缩当前 JSON"><span>{compressionCountdown ?? (compressionResult ? "再压缩" : "压缩")}</span></button>{compressionResult && <button className="compress-download" onClick={downloadCompressed} aria-label="下载压缩后的 JSON">↓</button>}</article><article className={mediaConversion ? "media-convert-card complete" : "media-convert-card"}><span className="compress-copy"><small>{mediaConversion ? "MEDIA JSON READY" : "MEDIA TO JSON"}</small><strong>{mediaConversion ? `${mediaConversion.fileCount} 个文件，${formatBytes(mediaConversion.jsonSize)}` : "转换媒体文件"}</strong><em>{mediaConversion ? `载荷压缩 ${mediaConversion.percentage.toFixed(1)}%，${mediaConversion.kind}` : "MP4、GIF、APNG 或序列帧"}</em></span><button className="media-upload-button" onClick={() => mediaFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "转换中..." : "上传非json文件"}</button>{mediaConversion && <button className="compress-download" onClick={downloadMediaJson} aria-label="下载转换后的媒体 JSON">↓</button>}{mediaConversionError && <span className="media-inline-error">{mediaConversionError}</span>}</article></div><input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /><input ref={mediaFileRef} type="file" accept="video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={convertMediaFiles} hidden /></section>
+    <header className="topbar"><a className="brand" href="#" aria-label="Jsonable 首页"><CubeLogo /><span>Jsonable</span></a><div className="top-actions"><span className="privacy"><span className="lock">◆</span>文件仅在本地处理</span><button className="button button-ghost" onClick={() => fileRef.current?.click()}>＋ 上传文件</button><button className="button button-dark" onClick={download}>下载 JSON <span>↓</span></button></div></header>
+    <section className="hero"><div className="hero-copy"><span className="eyebrow">VISUAL JSON EDITOR</span><h1>让每一层 JSON，<em>都看得见。</em></h1><p>上传 JSON，直接替换颜色、组合形状与图片资源；结构再复杂，也能边改边看。</p></div><MagicCube compact /><div className="hero-tools"><article className={compressionResult ? "compress-card complete" : "compress-card"}><span className="compress-copy"><small>{compressionResult ? "COMPRESSION COMPLETE" : "JSON MINIFIER"}</small><strong>{compressionResult ? `压缩后 ${formatBytes(compressionResult.compressedSize)}` : "压缩当前 JSON"}</strong><em>{compressionResult ? `原始 ${formatBytes(compressionResult.originalSize)}，减少 ${compressionResult.percentage.toFixed(1)}%` : `当前 ${formatBytes(new Blob([jsonText]).size)}，移除缩进与换行`}</em></span><button className={compressionCountdown !== null ? "compress-action running" : "compress-action"} onClick={() => { setCompressionResult(null); setCompressionCountdown(3); }} disabled={compressionCountdown !== null} aria-label="压缩当前 JSON"><span>{compressionCountdown ?? (compressionResult ? "再压缩" : "压缩")}</span></button>{compressionResult && <button className="compress-download" onClick={downloadCompressed} aria-label="下载压缩后的 JSON">↓</button>}</article><article className={mediaConversion ? "media-convert-card complete" : "media-convert-card"}><span className="compress-copy"><small>{mediaConversion ? "PLAYABLE LOTTIE READY" : "MEDIA TO LOTTIE JSON"}</small><strong>{mediaConversion ? `${mediaConversion.fileCount} 帧，${formatBytes(mediaConversion.jsonSize)}` : "转换为可播放 JSON"}</strong><em>{mediaConversion ? `图像压缩 ${mediaConversion.percentage.toFixed(1)}%，${mediaConversion.kind}` : "MP4、GIF、APNG 或序列帧"}</em></span><button className="media-upload-button" onClick={() => mediaFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "正在抽帧..." : "上传非json文件"}</button>{mediaConversion && <button className="compress-download" onClick={downloadMediaJson} aria-label="下载可播放的 Lottie JSON">↓</button>}{mediaConversionError && <span className="media-inline-error">{mediaConversionError}</span>}</article></div><input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /><input ref={mediaFileRef} type="file" accept="video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={convertMediaFiles} hidden /></section>
     {error && <div className="error" role="alert">{error}</div>}
     <section className="workspace">
       <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、组合矢量和图片资源的本地批量替换。</p></div></aside>
@@ -590,7 +666,7 @@ export default function Home() {
         <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => { setSelectedShape(id); setUploadedSvg(null); setReplacementError(""); setShapeEditorOpen(true); }}><ShapeThumb data={data} shape={shape} /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div></div> :
         <div className="image-workbench"><div className="image-list">{images.map((item) => <button key={item.id} className={activeImage?.id === item.id ? "image-row selected" : "image-row"} onClick={() => { setSelectedImage(item.id); setUploadedImage(null); setImageError(""); setImageEditorOpen(true); }}><span className="image-thumb"><ImageThumb source={item.preview} label={item.name} /></span><span><strong>{item.name}</strong><small>{item.mode === "lottie-asset" ? "Lottie 图片资源" : item.key}</small></span><b>× {item.count}</b></button>)}{!images.length && <Empty text="暂未识别到图片资源；支持 Lottie assets 和常见图片地址字段" />}</div></div>}
       </section>
-      <aside className="json-panel"><div className="panel-tabs"><button className={inspectorTab === "preview" ? "active" : ""} onClick={() => setInspectorTab("preview")}><span className="status-dot" />视觉预览</button><button className={inspectorTab === "json" ? "active" : ""} onClick={() => setInspectorTab("json")}>实时 JSON</button></div>{inspectorTab === "preview" ? <div className="preview-panel"><div className="preview-head"><span>{isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS · {shapes.length} SHAPES · {images.length} IMAGES</b></div><VisualPreview data={data} colors={colors} shapes={shapes} images={images} /><div className="preview-foot">修改颜色、形状或图片后自动刷新</div></div> : <><div className="json-head"><div><span className="status-dot" /> 已同步</div><button onClick={() => navigator.clipboard.writeText(jsonText).then(() => setToast("JSON 已复制"))}>复制</button></div><pre>{jsonText.split("\n").map((line, i) => <code key={i}><span>{String(i + 1).padStart(2, "0")}</span>{line}</code>)}</pre><div className="json-foot"><span>{jsonText.split("\n").length} 行</span><span>UTF-8</span></div></>}</aside>
+      <aside className="json-panel"><div className="panel-tabs"><button className={inspectorTab === "preview" ? "active" : ""} onClick={() => setInspectorTab("preview")}><span className="status-dot" />视觉预览</button><button className={inspectorTab === "json" ? "active" : ""} onClick={() => setInspectorTab("json")}>实时 JSON</button></div>{inspectorTab === "preview" ? <div className="preview-panel"><div className="preview-head"><span>{!hasUploadedFile ? "JSONABLE CUBE" : isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS · {shapes.length} SHAPES · {images.length} IMAGES</b></div><VisualPreview data={data} colors={colors} shapes={shapes} images={images} isDefault={!hasUploadedFile} /><div className="preview-foot">{hasUploadedFile ? "修改颜色、形状或图片后自动刷新" : "上传 JSON 后，这里会变成你的实时预览"}</div></div> : <><div className="json-head"><div><span className="status-dot" /> 已同步</div><button onClick={() => navigator.clipboard.writeText(jsonText).then(() => setToast("JSON 已复制"))}>复制</button></div><pre>{jsonText.split("\n").map((line, i) => <code key={i}><span>{String(i + 1).padStart(2, "0")}</span>{line}</code>)}</pre><div className="json-foot"><span>{jsonText.split("\n").length} 行</span><span>UTF-8</span></div></>}</aside>
     </section>
     {colorEditor && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="颜色编辑器"><div className="color-dialog"><header><div><span className="eyebrow">COLOR EDITOR</span><h3>替换颜色</h3></div><button onClick={() => setColorEditor(null)} aria-label="关闭颜色编辑器">×</button></header><div className="color-dialog-main"><label className="large-picker" style={{ background: colorEditor.current }}><input type="color" value={colorEditor.current} onChange={(event) => changeColor(event.target.value)} /><span>点击选择色彩</span></label><div className="color-values"><label>HEX 色值</label><div><input value={colorEditor.draft} onChange={(event) => setColorEditor({ ...colorEditor, draft: event.target.value.toUpperCase() })} /><button onClick={() => changeColor(colorEditor.draft)}>应用</button></div><small>将同步修改 {colorEditor.count} 个引用，窗口不会自动关闭。</small></div></div><div className="quick-colors">{["#101513", "#E8F0ED", "#48C5A1", "#2A6F5C", "#E66E58", "#5E8DA0"].map((hex) => <button key={hex} style={{ background: hex }} onClick={() => changeColor(hex)} aria-label={`选择 ${hex}`} />)}</div><footer><span>修改已实时写入预览和 JSON</span><button onClick={() => setColorEditor(null)}>关闭</button></footer></div></div>}
     {shapeEditorOpen && activeShape && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label={`替换形状 ${activeShape.name}`}><div className="color-dialog asset-dialog"><header><div><span className="eyebrow">SVG REPLACEMENT</span><h3>替换「{activeShape.name}」</h3></div><button onClick={() => setShapeEditorOpen(false)} aria-label="关闭形状替换窗口">×</button></header><div className="asset-dialog-body"><div className="replace-card"><div className="composed-current"><ShapeThumb data={data} shape={activeShape} /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}>{uploadedSvg ? <img className="replacement-svg-preview" src={uploadedSvg.preview} alt="上传的 SVG 预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedSvg ? "已转换为矢量路径" : "上传替换形状"}</small><strong>{uploadedSvg?.fileName || "选择 SVG 文件"}</strong></span><b>{uploadedSvg ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="image/svg+xml,.svg" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{uploadedSvg && <><div className="replacement-summary"><span>已转换的矢量部分</span><b>{uploadedSvg.partCount}</b></div><button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape)} disabled={activeShape.mode === "reference"}>使用这个 SVG 替换全部同名形状</button>{activeShape.mode === "reference" && <div className="replacement-empty">当前目标是外部引用，不能直接写入 SVG 路径。</div>}</>}<p>SVG 会转换为 JSON 内的矢量路径，同时保留同名实例的位置、缩放和动画变换。</p></div></div><footer><span>文件仅在本地浏览器中处理</span><button onClick={() => setShapeEditorOpen(false)}>关闭</button></footer></div></div>}
