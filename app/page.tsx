@@ -9,6 +9,7 @@ type ShapeInfo = { name: string; count: number; mode: "lottie-group" | "lottie-l
 type UploadedSvg = { fileName: string; name: string; preview: string; raw: string; group: Record<string, unknown>; partCount: number };
 type ImageInfo = { id: string; name: string; value: string; preview: string; count: number; mode: "lottie-asset" | "field"; assetId?: string; key?: string };
 type UploadedImage = { fileName: string; dataUrl: string; width: number; height: number; size: number };
+type CompressionResult = { text: string; originalSize: number; compressedSize: number; percentage: number };
 
 const SAMPLE = {
   name: "summer-campaign",
@@ -33,6 +34,7 @@ const ALIASES: Record<string, ShapeName> = {
 const COLOR_KEY = /^(c|fc|sc|color|colour|fill|fillcolor|stroke|strokecolor|background|backgroundcolor|bg|tint|foreground)$/i;
 
 function clamp(value: number) { return Math.max(0, Math.min(255, Math.round(value))); }
+function formatBytes(bytes: number) { return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`; }
 function rgbHex(r: number, g: number, b: number) { return `#${[r, g, b].map((v) => clamp(v).toString(16).padStart(2, "0")).join("")}`.toUpperCase(); }
 function normalizeHex(value: string) {
   const argb = /^0x/i.test(value); let raw = value.replace(/^#|^0x/i, "");
@@ -436,6 +438,8 @@ export default function Home() {
   const [colorEditor, setColorEditor] = useState<{ current: string; draft: string; count: number } | null>(null);
   const [shapeEditorOpen, setShapeEditorOpen] = useState(false);
   const [imageEditorOpen, setImageEditorOpen] = useState(false);
+  const [compressionCountdown, setCompressionCountdown] = useState<number | null>(null);
+  const [compressionResult, setCompressionResult] = useState<CompressionResult | null>(null);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("已识别示例 JSON");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -445,6 +449,18 @@ export default function Home() {
   const shapes = useMemo(() => scanShapes(data), [data]);
   const images = useMemo(() => scanImages(data), [data]);
   const jsonText = useMemo(() => JSON.stringify(data, null, 2), [data]);
+  useEffect(() => { setCompressionCountdown(null); setCompressionResult(null); }, [data]);
+  useEffect(() => {
+    if (compressionCountdown === null) return;
+    if (compressionCountdown > 0) {
+      const timer = window.setTimeout(() => setCompressionCountdown((current) => current === null ? null : current - 1), 1000);
+      return () => window.clearTimeout(timer);
+    }
+    const text = JSON.stringify(data); const originalSize = new Blob([jsonText]).size; const compressedSize = new Blob([text]).size;
+    const percentage = originalSize ? Math.max(0, (1 - compressedSize / originalSize) * 100) : 0;
+    setCompressionResult({ text, originalSize, compressedSize, percentage }); setCompressionCountdown(null);
+    setToast(`压缩完成：减少 ${percentage.toFixed(1)}%`);
+  }, [compressionCountdown, data, jsonText]);
   useEffect(() => {
     if (!colorEditor && !shapeEditorOpen && !imageEditorOpen) return;
     const previousOverflow = document.body.style.overflow;
@@ -516,10 +532,15 @@ export default function Home() {
     setToast(`已使用 ${uploadedSvg.fileName} 替换 ${from.count} 个「${from.name}」`);
   };
   const download = () => { const blob = new Blob([jsonText], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = fileName.replace(/\.json$/i, "") + "-edited.json"; a.click(); URL.revokeObjectURL(url); setToast("修改后的 JSON 已下载"); };
+  const downloadCompressed = () => {
+    if (!compressionResult) return;
+    const blob = new Blob([compressionResult.text], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a");
+    a.href = url; a.download = fileName.replace(/\.json$/i, "") + "-compressed.json"; a.click(); URL.revokeObjectURL(url); setToast("压缩后的 JSON 已下载");
+  };
 
   return <main>
     <header className="topbar"><a className="brand" href="#" aria-label="Jsonable 首页"><span className="brand-mark">J</span><span>Jsonable</span></a><div className="top-actions"><span className="privacy"><span className="lock">◆</span>文件仅在本地处理</span><button className="button button-ghost" onClick={() => fileRef.current?.click()}>＋ 上传文件</button><button className="button button-dark" onClick={download}>下载 JSON <span>↓</span></button></div></header>
-    <section className="hero"><div><span className="eyebrow">VISUAL JSON EDITOR</span><h1>看清结构，<em>改得准确。</em></h1><p>上传 JSON，直接替换颜色、组合形状与图片资源，修改结果实时可见。</p></div><button className="file-card" onClick={() => fileRef.current?.click()}><span className="file-icon">{"{ }"}</span><span><strong>{fileName}</strong><small>{(new Blob([jsonText]).size / 1024).toFixed(1)} KB · {isLottie(data) ? "LOTTIE JSON" : "JSON"}</small></span><span className="file-change">更换文件</span></button><input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /></section>
+    <section className="hero"><div><span className="eyebrow">VISUAL JSON EDITOR</span><h1>看清结构，<em>改得准确。</em></h1><p>上传 JSON，直接替换颜色、组合形状与图片资源，修改结果实时可见。</p></div><article className={compressionResult ? "compress-card complete" : "compress-card"}><span className="compress-copy"><small>{compressionResult ? "COMPRESSION COMPLETE" : "JSON MINIFIER"}</small><strong>{compressionResult ? `压缩后 ${formatBytes(compressionResult.compressedSize)}` : "压缩当前 JSON"}</strong><em>{compressionResult ? `原始 ${formatBytes(compressionResult.originalSize)}，减少 ${compressionResult.percentage.toFixed(1)}%` : `当前 ${formatBytes(new Blob([jsonText]).size)}，移除缩进与换行`}</em></span><button className={compressionCountdown !== null ? "compress-action running" : "compress-action"} onClick={() => { setCompressionResult(null); setCompressionCountdown(3); }} disabled={compressionCountdown !== null} aria-label="压缩当前 JSON"><span>{compressionCountdown ?? (compressionResult ? "再压缩" : "压缩")}</span></button>{compressionResult && <button className="compress-download" onClick={downloadCompressed} aria-label="下载压缩后的 JSON">↓</button>}</article><input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /></section>
     {error && <div className="error" role="alert">{error}</div>}
     <section className="workspace">
       <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、组合矢量和图片资源的本地批量替换。</p></div></aside>
