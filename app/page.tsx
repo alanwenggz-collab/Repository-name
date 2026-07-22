@@ -10,6 +10,7 @@ type UploadedSvg = { fileName: string; name: string; preview: string; raw: strin
 type ImageInfo = { id: string; name: string; value: string; preview: string; count: number; mode: "lottie-asset" | "field"; assetId?: string; key?: string };
 type UploadedImage = { fileName: string; dataUrl: string; width: number; height: number; size: number };
 type CompressionResult = { text: string; originalSize: number; compressedSize: number; percentage: number };
+type MediaConversionResult = { text: string; kind: string; fileCount: number; originalSize: number; payloadSize: number; jsonSize: number; percentage: number; outputName: string };
 
 const SAMPLE = {
   name: "summer-campaign",
@@ -35,6 +36,19 @@ const COLOR_KEY = /^(c|fc|sc|color|colour|fill|fillcolor|stroke|strokecolor|back
 
 function clamp(value: number) { return Math.max(0, Math.min(255, Math.round(value))); }
 function formatBytes(bytes: number) { return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`; }
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = ""; const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  return btoa(binary);
+}
+async function packMediaFile(file: File) {
+  const source = new Uint8Array(await file.arrayBuffer()); let packed = source; let encoding = "base64";
+  if (typeof CompressionStream !== "undefined") {
+    const stream = file.stream().pipeThrough(new CompressionStream("gzip")); const compressed = new Uint8Array(await new Response(stream).arrayBuffer());
+    if (compressed.length < source.length) { packed = compressed; encoding = "gzip+base64"; }
+  }
+  return { name: file.name, mime: file.type || "application/octet-stream", originalSize: file.size, packedSize: packed.length, encoding, data: bytesToBase64(packed) };
+}
 function rgbHex(r: number, g: number, b: number) { return `#${[r, g, b].map((v) => clamp(v).toString(16).padStart(2, "0")).join("")}`.toUpperCase(); }
 function normalizeHex(value: string) {
   const argb = /^0x/i.test(value); let raw = value.replace(/^#|^0x/i, "");
@@ -440,11 +454,15 @@ export default function Home() {
   const [imageEditorOpen, setImageEditorOpen] = useState(false);
   const [compressionCountdown, setCompressionCountdown] = useState<number | null>(null);
   const [compressionResult, setCompressionResult] = useState<CompressionResult | null>(null);
+  const [mediaConverting, setMediaConverting] = useState(false);
+  const [mediaConversion, setMediaConversion] = useState<MediaConversionResult | null>(null);
+  const [mediaConversionError, setMediaConversionError] = useState("");
   const [error, setError] = useState("");
   const [toast, setToast] = useState("已识别示例 JSON");
   const fileRef = useRef<HTMLInputElement>(null);
   const replacementFileRef = useRef<HTMLInputElement>(null);
   const imageFileRef = useRef<HTMLInputElement>(null);
+  const mediaFileRef = useRef<HTMLInputElement>(null);
   const colors = useMemo(() => scanColors(data), [data]);
   const shapes = useMemo(() => scanShapes(data), [data]);
   const images = useMemo(() => scanImages(data), [data]);
@@ -487,6 +505,24 @@ export default function Home() {
       setToast(`识别完成：${foundColors} 种颜色，${foundShapes} 种形状，${foundImages} 个图片资源`);
     } catch { setError("无法解析这个文件，请检查 JSON 格式后重试。"); }
     event.target.value = "";
+  };
+
+  const convertMediaFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = [...(event.target.files || [])]; event.target.value = ""; if (!selected.length) return;
+    const files = selected.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+    const allowed = files.every((file) => /^(video\/mp4|image\/(gif|apng|png|jpeg|webp))$/i.test(file.type) || /\.(mp4|gif|apng|png|jpe?g|webp)$/i.test(file.name));
+    if (!allowed) { setMediaConversionError("请选择 MP4、GIF、APNG、PNG、JPG 或 WebP 文件。"); return; }
+    setMediaConverting(true); setMediaConversion(null); setMediaConversionError("");
+    try {
+      const packedFiles = await Promise.all(files.map(packMediaFile)); const originalSize = packedFiles.reduce((sum, file) => sum + file.originalSize, 0); const payloadSize = packedFiles.reduce((sum, file) => sum + file.packedSize, 0);
+      const extension = files[0].name.split(".").pop()?.toLowerCase(); const kind = files.length > 1 ? "sequence-frames" : extension === "mp4" ? "mp4" : extension === "gif" ? "gif" : extension === "apng" || files[0].type === "image/apng" ? "apng" : "image";
+      const manifest = { format: "jsonable-media", version: 1, kind, compression: "per-file automatic", frameOrder: files.length > 1 ? "natural-filename-sort" : undefined, files: packedFiles };
+      const text = JSON.stringify(manifest); const jsonSize = new Blob([text]).size; const percentage = originalSize ? Math.max(0, (1 - payloadSize / originalSize) * 100) : 0;
+      const baseName = files.length > 1 ? "sequence-frames" : files[0].name.replace(/\.[^.]+$/, "");
+      setMediaConversion({ text, kind, fileCount: files.length, originalSize, payloadSize, jsonSize, percentage, outputName: `${baseName}-media.json` });
+      setToast(`转换完成：${files.length} 个文件已封装为 JSON`);
+    } catch { setMediaConversionError("转换失败，请减少文件数量或检查浏览器可用内存后重试。"); }
+    finally { setMediaConverting(false); }
   };
 
   const loadReplacementFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -537,10 +573,15 @@ export default function Home() {
     const blob = new Blob([compressionResult.text], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a");
     a.href = url; a.download = fileName.replace(/\.json$/i, "") + "-compressed.json"; a.click(); URL.revokeObjectURL(url); setToast("压缩后的 JSON 已下载");
   };
+  const downloadMediaJson = () => {
+    if (!mediaConversion) return;
+    const blob = new Blob([mediaConversion.text], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a");
+    a.href = url; a.download = mediaConversion.outputName; a.click(); URL.revokeObjectURL(url); setToast("转换后的媒体 JSON 已下载");
+  };
 
   return <main>
     <header className="topbar"><a className="brand" href="#" aria-label="Jsonable 首页"><span className="brand-mark">J</span><span>Jsonable</span></a><div className="top-actions"><span className="privacy"><span className="lock">◆</span>文件仅在本地处理</span><button className="button button-ghost" onClick={() => fileRef.current?.click()}>＋ 上传文件</button><button className="button button-dark" onClick={download}>下载 JSON <span>↓</span></button></div></header>
-    <section className="hero"><div><span className="eyebrow">VISUAL JSON EDITOR</span><h1>看清结构，<em>改得准确。</em></h1><p>上传 JSON，直接替换颜色、组合形状与图片资源，修改结果实时可见。</p></div><article className={compressionResult ? "compress-card complete" : "compress-card"}><span className="compress-copy"><small>{compressionResult ? "COMPRESSION COMPLETE" : "JSON MINIFIER"}</small><strong>{compressionResult ? `压缩后 ${formatBytes(compressionResult.compressedSize)}` : "压缩当前 JSON"}</strong><em>{compressionResult ? `原始 ${formatBytes(compressionResult.originalSize)}，减少 ${compressionResult.percentage.toFixed(1)}%` : `当前 ${formatBytes(new Blob([jsonText]).size)}，移除缩进与换行`}</em></span><button className={compressionCountdown !== null ? "compress-action running" : "compress-action"} onClick={() => { setCompressionResult(null); setCompressionCountdown(3); }} disabled={compressionCountdown !== null} aria-label="压缩当前 JSON"><span>{compressionCountdown ?? (compressionResult ? "再压缩" : "压缩")}</span></button>{compressionResult && <button className="compress-download" onClick={downloadCompressed} aria-label="下载压缩后的 JSON">↓</button>}</article><input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /></section>
+    <section className="hero"><div><span className="eyebrow">VISUAL JSON EDITOR</span><h1>看清结构，<em>改得准确。</em></h1><p>上传 JSON，直接替换颜色、组合形状与图片资源，修改结果实时可见。</p></div><div className="hero-tools"><article className={compressionResult ? "compress-card complete" : "compress-card"}><span className="compress-copy"><small>{compressionResult ? "COMPRESSION COMPLETE" : "JSON MINIFIER"}</small><strong>{compressionResult ? `压缩后 ${formatBytes(compressionResult.compressedSize)}` : "压缩当前 JSON"}</strong><em>{compressionResult ? `原始 ${formatBytes(compressionResult.originalSize)}，减少 ${compressionResult.percentage.toFixed(1)}%` : `当前 ${formatBytes(new Blob([jsonText]).size)}，移除缩进与换行`}</em></span><button className={compressionCountdown !== null ? "compress-action running" : "compress-action"} onClick={() => { setCompressionResult(null); setCompressionCountdown(3); }} disabled={compressionCountdown !== null} aria-label="压缩当前 JSON"><span>{compressionCountdown ?? (compressionResult ? "再压缩" : "压缩")}</span></button>{compressionResult && <button className="compress-download" onClick={downloadCompressed} aria-label="下载压缩后的 JSON">↓</button>}</article><article className={mediaConversion ? "media-convert-card complete" : "media-convert-card"}><span className="compress-copy"><small>{mediaConversion ? "MEDIA JSON READY" : "MEDIA TO JSON"}</small><strong>{mediaConversion ? `${mediaConversion.fileCount} 个文件，${formatBytes(mediaConversion.jsonSize)}` : "转换媒体文件"}</strong><em>{mediaConversion ? `载荷压缩 ${mediaConversion.percentage.toFixed(1)}%，${mediaConversion.kind}` : "MP4、GIF、APNG 或序列帧"}</em></span><button className="media-upload-button" onClick={() => mediaFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "转换中..." : "上传非json文件"}</button>{mediaConversion && <button className="compress-download" onClick={downloadMediaJson} aria-label="下载转换后的媒体 JSON">↓</button>}{mediaConversionError && <span className="media-inline-error">{mediaConversionError}</span>}</article></div><input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /><input ref={mediaFileRef} type="file" accept="video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={convertMediaFiles} hidden /></section>
     {error && <div className="error" role="alert">{error}</div>}
     <section className="workspace">
       <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、组合矢量和图片资源的本地批量替换。</p></div></aside>
