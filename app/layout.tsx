@@ -7,11 +7,11 @@ const image = `${basePath}/og.png`;
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
-  title: "Jsonicle · Visual JSON Editor",
-  description: "识别并批量替换 JSON 中的颜色与同名形状。",
+  title: "Jsonable | Visual JSON Editor",
+  description: "直观识别并替换 JSON 中的颜色、组合形状与图片资源。",
   icons: { icon: `${basePath}/favicon.svg`, shortcut: `${basePath}/favicon.svg` },
-  openGraph: { title: "Jsonicle · Visual JSON Editor", description: "找到它，换掉它。", images: [{ url: image, width: 1200, height: 630 }] },
-  twitter: { card: "summary_large_image", title: "Jsonicle · Visual JSON Editor", description: "找到它，换掉它。", images: [image] },
+  openGraph: { title: "Jsonable | Visual JSON Editor", description: "看清结构，改得准确。", images: [{ url: image, width: 1200, height: 630 }] },
+  twitter: { card: "summary_large_image", title: "Jsonable | Visual JSON Editor", description: "看清结构，改得准确。", images: [image] },
 };
 
 export default function RootLayout({
