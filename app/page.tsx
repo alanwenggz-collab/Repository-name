@@ -484,7 +484,7 @@ function ImageThumb({ source, label }: { source: string; label: string }) {
 }
 
 function CubeLogo() {
-  return <span className="cube-logo" aria-hidden="true"><i /><i /><i /></span>;
+  return <img className="brand-logo" src="/jsonable-logo-v2.png" alt="" aria-hidden="true" />;
 }
 
 const CUBE_FACES = ["front", "back", "right", "left", "top", "bottom"];

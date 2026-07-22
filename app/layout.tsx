@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: "Jsonable | Visual JSON Editor",
   description: "直观识别并替换 JSON 中的颜色、组合形状与图片资源。",
-  icons: { icon: `${basePath}/favicon.svg`, shortcut: `${basePath}/favicon.svg` },
+  icons: { icon: `${basePath}/jsonable-logo-v2.png`, shortcut: `${basePath}/jsonable-logo-v2.png` },
   openGraph: { title: "Jsonable | Visual JSON Editor", description: "看清结构，改得准确。", images: [{ url: image, width: 1200, height: 630 }] },
   twitter: { card: "summary_large_image", title: "Jsonable | Visual JSON Editor", description: "看清结构，改得准确。", images: [image] },
 };
