@@ -556,14 +556,16 @@ export default function Home() {
   const [mediaConversion, setMediaConversion] = useState<MediaConversionResult | null>(null);
   const [mediaConversionError, setMediaConversionError] = useState("");
   const [isDraggingJson, setIsDraggingJson] = useState(false);
-  const [toolsDocked, setToolsDocked] = useState(false);
+  const [isDraggingLanding, setIsDraggingLanding] = useState(false);
+  const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [error, setError] = useState("");
-  const [toast, setToast] = useState("已识别示例 JSON");
+  const [toast, setToast] = useState("等待上传文件");
   const fileRef = useRef<HTMLInputElement>(null);
   const replacementFileRef = useRef<HTMLInputElement>(null);
   const imageFileRef = useRef<HTMLInputElement>(null);
   const mediaFileRef = useRef<HTMLInputElement>(null);
-  const heroRef = useRef<HTMLElement>(null);
+  const unifiedFileRef = useRef<HTMLInputElement>(null);
+  const fileMenuRef = useRef<HTMLDivElement>(null);
   const colors = useMemo(() => scanColors(data), [data]);
   const shapes = useMemo(() => scanShapes(data), [data]);
   const images = useMemo(() => scanImages(data), [data]);
@@ -591,13 +593,12 @@ export default function Home() {
     return () => { document.body.style.overflow = previousOverflow; window.removeEventListener("keydown", closeOnEscape); };
   }, [colorEditor, shapeEditorOpen, imageEditorOpen]);
   useEffect(() => {
-    const updateDock = () => {
-      if (!heroRef.current || window.innerWidth < 1500) { setToolsDocked(false); return; }
-      setToolsDocked(heroRef.current.getBoundingClientRect().top <= -72);
-    };
-    updateDock(); window.addEventListener("scroll", updateDock, { passive: true }); window.addEventListener("resize", updateDock);
-    return () => { window.removeEventListener("scroll", updateDock); window.removeEventListener("resize", updateDock); };
-  }, []);
+    if (!fileMenuOpen) return;
+    const close = (event: MouseEvent) => { if (!fileMenuRef.current?.contains(event.target as Node)) setFileMenuOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setFileMenuOpen(false); };
+    document.addEventListener("pointerdown", close); window.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", close); window.removeEventListener("keydown", escape); };
+  }, [fileMenuOpen]);
   const activeShape = shapes.find((item) => `${item.mode}:${item.name}` === selectedShape) || shapes[0];
   const activeImage = images.find((item) => item.id === selectedImage) || images[0];
   const tabMeta = activeTab === "colors"
@@ -624,8 +625,8 @@ export default function Home() {
     await loadJsonFile(file);
   };
 
-  const convertMediaFiles = async (event: ChangeEvent<HTMLInputElement>) => {
-    const selected = [...(event.target.files || [])]; event.target.value = ""; if (!selected.length) return;
+  const convertMediaList = async (selected: File[]) => {
+    if (!selected.length) return;
     const files = selected.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
     const allowed = files.every((file) => /^(video\/mp4|image\/(gif|apng|png|jpeg|webp))$/i.test(file.type) || /\.(mp4|gif|apng|png|jpe?g|webp)$/i.test(file.name));
     if (!allowed) { setMediaConversionError("请选择 MP4、GIF、APNG、PNG、JPG 或 WebP 文件。"); return; }
@@ -635,10 +636,25 @@ export default function Home() {
       const frames = files.length > 1 ? await Promise.all(files.slice(0, 96).map(decodeStill)) : kind === "mp4" ? await decodeVideo(files[0]) : kind === "gif" || kind === "apng" ? await decodeAnimatedImage(files[0]) : [await decodeStill(files[0])];
       const lottie = framesToLottie(frames); const text = JSON.stringify(lottie); const jsonSize = new Blob([text]).size; const originalSize = files.reduce((sum, file) => sum + file.size, 0); const payloadSize = frames.reduce((sum, frame) => sum + Math.ceil(frame.dataUrl.length * .75), 0); const percentage = originalSize ? Math.max(0, (1 - Math.min(payloadSize, originalSize) / originalSize) * 100) : 0;
       const baseName = files.length > 1 ? "sequence-frames" : files[0].name.replace(/\.[^.]+$/, "");
-      setMediaConversion({ text, kind, fileCount: frames.length, originalSize, payloadSize, jsonSize, percentage, outputName: `${baseName}-lottie.json` });
+      const outputName = `${baseName}-lottie.json`;
+      setMediaConversion({ text, kind, fileCount: frames.length, originalSize, payloadSize, jsonSize, percentage, outputName });
+      setData(lottie); setHasUploadedFile(true); setFileName(outputName); setInspectorTab("preview"); setError("");
       setToast(`转换完成：已生成 ${frames.length} 帧可播放 Lottie JSON`);
     } catch { setMediaConversionError("转换失败：请确认浏览器支持该媒体编码，或缩短视频、减少序列帧后重试。"); }
     finally { setMediaConverting(false); }
+  };
+  const convertMediaFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = [...(event.target.files || [])]; event.target.value = ""; await convertMediaList(selected);
+  };
+  const unifiedUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = [...(event.target.files || [])]; event.target.value = ""; if (!selected.length) return;
+    if (selected.length === 1 && (/\.json$/i.test(selected[0].name) || selected[0].type === "application/json")) await loadJsonFile(selected[0]);
+    else await convertMediaList(selected);
+  };
+  const dropUnified = async (event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault(); setIsDraggingLanding(false); const selected = [...(event.dataTransfer.files || [])]; if (!selected.length) return;
+    if (selected.length === 1 && (/\.json$/i.test(selected[0].name) || selected[0].type === "application/json")) await loadJsonFile(selected[0]);
+    else await convertMediaList(selected);
   };
 
   const loadReplacementFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -696,18 +712,31 @@ export default function Home() {
   };
 
   return <main>
-    <header className="topbar"><a className="brand" href="#" aria-label="Jsonable 首页"><CubeLogo /><span>Jsonable</span></a><div className="top-actions"><span className="privacy"><span className="lock">◆</span>文件仅在本地处理</span><button className="button button-ghost" onClick={() => fileRef.current?.click()}>＋ 上传文件</button><button className="button button-dark" onClick={download}>下载 JSON <span>↓</span></button></div></header>
-    <section className="hero" ref={heroRef}>
-      <div className="hero-copy"><span className="eyebrow">VISUAL JSON EDITOR</span><h1>让每一层 JSON，<em>都看得见。</em></h1><p>上传 JSON，直接替换颜色、组合形状与图片资源；结构再复杂，也能边改边看。</p></div>
-      <MagicCube compact />
-      <div className={toolsDocked ? "hero-tools docked" : "hero-tools"}>
-        <article className={compressionResult ? "compress-card complete" : "compress-card"}><span className="compress-copy"><small>{compressionResult ? "COMPRESSION COMPLETE" : "JSON MINIFIER"}</small><strong>{compressionResult ? `压缩后 ${formatBytes(compressionResult.compressedSize)}` : "压缩当前 JSON"}</strong><em>{compressionResult ? `原始 ${formatBytes(compressionResult.originalSize)}，减少 ${compressionResult.percentage.toFixed(1)}%` : `当前 ${formatBytes(new Blob([jsonText]).size)}，移除缩进与换行`}</em></span><button className={compressionCountdown !== null ? "compress-action running" : "compress-action"} onClick={() => { setCompressionResult(null); setCompressionCountdown(3); }} disabled={compressionCountdown !== null} aria-label="压缩当前 JSON"><span>{compressionCountdown ?? (compressionResult ? "再压缩" : "压缩")}</span></button>{compressionResult && <button className="compress-download" onClick={downloadCompressed} aria-label="下载压缩后的 JSON">↓</button>}</article>
-        <article className={mediaConversion ? "media-convert-card complete" : "media-convert-card"}><span className="compress-copy"><small>{mediaConversion ? "PLAYABLE LOTTIE READY" : "MEDIA TO LOTTIE JSON"}</small><strong>{mediaConversion ? `${mediaConversion.fileCount} 帧，${formatBytes(mediaConversion.jsonSize)}` : "转换为可播放 JSON"}</strong><em>{mediaConversion ? `图像压缩 ${mediaConversion.percentage.toFixed(1)}%，${mediaConversion.kind}` : "MP4、GIF、APNG 或序列帧"}</em></span><button className="media-upload-button" onClick={() => mediaFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "正在抽帧..." : "上传非json文件"}</button>{mediaConversion && <button className="compress-download" onClick={downloadMediaJson} aria-label="下载可播放的 Lottie JSON">↓</button>}{mediaConversionError && <span className="media-inline-error">{mediaConversionError}</span>}</article>
+    <header className="topbar">
+      <a className="brand" href="#" aria-label="Jsonable 首页"><CubeLogo /><span>Jsonable</span></a>
+      <div className="top-actions"><span className="privacy"><span className="lock">◆</span>文件仅在本地处理</span>
+        <div className="file-menu" ref={fileMenuRef}>
+          <button className={fileMenuOpen ? "button button-ghost active" : "button button-ghost"} onClick={() => setFileMenuOpen((open) => !open)} aria-expanded={fileMenuOpen}>文件与处理 <span>⌄</span></button>
+          {fileMenuOpen && <div className="file-menu-popover">
+            <button onClick={() => { setFileMenuOpen(false); fileRef.current?.click(); }}><span>01</span><strong>上传 JSON</strong><small>打开可编辑动画文件</small></button>
+            <button onClick={() => { setFileMenuOpen(false); mediaFileRef.current?.click(); }}><span>02</span><strong>上传非 JSON</strong><small>MP4、GIF、APNG、序列帧</small></button>
+            <button disabled={!hasUploadedFile || compressionCountdown !== null} onClick={() => { setCompressionResult(null); setCompressionCountdown(3); }}><span>03</span><strong>{compressionCountdown !== null ? `正在压缩 ${compressionCountdown}` : "压缩当前 JSON"}</strong><small>{compressionResult ? `减少 ${compressionResult.percentage.toFixed(1)}% · ${formatBytes(compressionResult.compressedSize)}` : "移除缩进与换行"}</small></button>
+            {compressionResult && <button onClick={downloadCompressed}><span>↓</span><strong>下载压缩文件</strong><small>{formatBytes(compressionResult.compressedSize)}</small></button>}
+            {mediaConversion && <button onClick={downloadMediaJson}><span>↓</span><strong>下载转换文件</strong><small>{mediaConversion.fileCount} 帧 Lottie JSON</small></button>}
+          </div>}
+        </div>
+        <button className="button button-dark" onClick={download} disabled={!hasUploadedFile}>下载 JSON <span>↓</span></button>
       </div>
-      <input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /><input ref={mediaFileRef} type="file" accept="video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={convertMediaFiles} hidden />
-    </section>
+    </header>
+    <input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden />
+    <input ref={mediaFileRef} type="file" accept="video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={convertMediaFiles} hidden />
+    <input ref={unifiedFileRef} type="file" accept="application/json,.json,video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={unifiedUpload} hidden />
+    {!hasUploadedFile ? <section className={isDraggingLanding ? "landing-hero is-dragging" : "landing-hero"} onDragEnter={(event) => { event.preventDefault(); setIsDraggingLanding(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDraggingLanding(false); }} onDrop={dropUnified}>
+      <div className="landing-copy"><span className="eyebrow">VISUAL JSON EDITOR</span><h1>先把文件放进来，<br /><em>再把每一层看清。</em></h1><p>JSON、MP4、GIF、APNG 与序列帧都可以。媒体文件会先转换成可播放、可编辑的 Lottie JSON。</p><div className="landing-steps"><span>01 上传</span><span>02 预览与代码</span><span>03 修改元素</span></div></div>
+      <div className="landing-upload"><MagicCube compact /><button onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "正在转换媒体..." : "选择文件"}<span>＋</span></button><strong>或把文件拖到这里</strong><small>支持单个 JSON / 视频 / 动图，也支持多选序列帧</small>{mediaConversionError && <em>{mediaConversionError}</em>}{isDraggingLanding && <div className="landing-drop-state">松开开始处理</div>}</div>
+    </section> : <section className="editor-context"><div><span className="eyebrow">NOW EDITING</span><strong>{fileName}</strong><small>{isLottie(data) ? "可播放 Lottie" : "JSON 视觉结构"} · {formatBytes(new Blob([jsonText]).size)}</small></div><button onClick={() => unifiedFileRef.current?.click()}>更换文件</button></section>}
     {error && <div className="error" role="alert">{error}</div>}
-    <section className="workspace">
+    {hasUploadedFile && <section className="workspace">
       <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、组合矢量和图片资源的本地批量替换。</p></div></aside>
       <section className="editor-panel"><div className="resource-tabs" role="tablist" aria-label="可替换资源"><button role="tab" aria-selected={activeTab === "colors"} className={activeTab === "colors" ? "active" : ""} onClick={() => setActiveTab("colors")}><span>颜色</span><small>COLORS</small><b>{colors.length}</b></button><button role="tab" aria-selected={activeTab === "shapes"} className={activeTab === "shapes" ? "active" : ""} onClick={() => setActiveTab("shapes")}><span>组合形状</span><small>GROUPS</small><b>{shapes.length}</b></button><button role="tab" aria-selected={activeTab === "images"} className={activeTab === "images" ? "active" : ""} onClick={() => setActiveTab("images")}><span>图片资源</span><small>IMAGES</small><b>{images.length}</b></button></div><div className="section-head"><div><h2>{tabMeta.title}</h2><span className="en">{tabMeta.english}</span></div><p>{tabMeta.description}</p></div>
         {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><button className="picker-button" onClick={() => setColorEditor({ current: color.hex, draft: color.hex, count: color.count })}><span className="picker-chip" style={{ background: color.hex }} />选择颜色</button></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> : activeTab === "shapes" ?
@@ -723,7 +752,7 @@ export default function Home() {
           {isDraggingJson && <div className="drop-overlay"><span>↓</span><strong>松开即可载入 JSON</strong><small>文件只在本地浏览器中处理</small></div>}
         </div> : <><div className="json-head"><div><span className="status-dot" /> 已同步</div><button onClick={() => navigator.clipboard.writeText(jsonText).then(() => setToast("JSON 已复制"))}>复制</button></div><pre>{jsonText.split("\n").map((line, i) => <code key={i}><span>{String(i + 1).padStart(2, "0")}</span>{line}</code>)}</pre><div className="json-foot"><span>{jsonText.split("\n").length} 行</span><span>UTF-8</span></div></>}
       </aside>
-    </section>
+    </section>}
     {colorEditor && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="颜色编辑器"><div className="color-dialog"><header><div><span className="eyebrow">COLOR EDITOR</span><h3>替换颜色</h3></div><button onClick={() => setColorEditor(null)} aria-label="关闭颜色编辑器">×</button></header><div className="color-dialog-main"><label className="large-picker" style={{ background: colorEditor.current }}><input type="color" value={colorEditor.current} onChange={(event) => changeColor(event.target.value)} /><span>点击选择色彩</span></label><div className="color-values"><label>HEX 色值</label><div><input value={colorEditor.draft} onChange={(event) => setColorEditor({ ...colorEditor, draft: event.target.value.toUpperCase() })} /><button onClick={() => changeColor(colorEditor.draft)}>应用</button></div><small>将同步修改 {colorEditor.count} 个引用，窗口不会自动关闭。</small></div></div><div className="quick-colors">{["#101513", "#E8F0ED", "#48C5A1", "#2A6F5C", "#E66E58", "#5E8DA0"].map((hex) => <button key={hex} style={{ background: hex }} onClick={() => changeColor(hex)} aria-label={`选择 ${hex}`} />)}</div><footer><span>修改已实时写入预览和 JSON</span><button onClick={() => setColorEditor(null)}>关闭</button></footer></div></div>}
     {shapeEditorOpen && activeShape && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label={`替换形状 ${activeShape.name}`}><div className="color-dialog asset-dialog"><header><div><span className="eyebrow">SVG REPLACEMENT</span><h3>替换「{activeShape.name}」</h3></div><button onClick={() => setShapeEditorOpen(false)} aria-label="关闭形状替换窗口">×</button></header><div className="asset-dialog-body"><div className="replace-card"><div className="composed-current"><ShapeThumb data={data} shape={activeShape} /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}>{uploadedSvg ? <img className="replacement-svg-preview" src={uploadedSvg.preview} alt="上传的 SVG 预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedSvg ? "已转换为矢量路径" : "上传替换形状"}</small><strong>{uploadedSvg?.fileName || "选择 SVG 文件"}</strong></span><b>{uploadedSvg ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="image/svg+xml,.svg" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{uploadedSvg && <><div className="replacement-summary"><span>已转换的矢量部分</span><b>{uploadedSvg.partCount}</b></div><button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape)} disabled={activeShape.mode === "reference"}>使用这个 SVG 替换全部同名形状</button>{activeShape.mode === "reference" && <div className="replacement-empty">当前目标是外部引用，不能直接写入 SVG 路径。</div>}</>}<p>SVG 会转换为 JSON 内的矢量路径，同时保留同名实例的位置、缩放和动画变换。</p></div></div><footer><span>文件仅在本地浏览器中处理</span><button onClick={() => setShapeEditorOpen(false)}>关闭</button></footer></div></div>}
     {imageEditorOpen && activeImage && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label={`替换图片 ${activeImage.name}`}><div className="color-dialog asset-dialog"><header><div><span className="eyebrow">IMAGE REPLACEMENT</span><h3>替换「{activeImage.name}」</h3></div><button onClick={() => setImageEditorOpen(false)} aria-label="关闭图片替换窗口">×</button></header><div className="asset-dialog-body"><div className="replace-card image-replace-card"><div className="current-image"><span className="current-image-preview"><ImageThumb source={activeImage.preview} label={activeImage.name} /></span><span><small>当前资源</small><strong>{activeImage.name}</strong><em>{activeImage.count} 个引用</em></span></div><button className="replacement-upload image-upload" onClick={() => imageFileRef.current?.click()}>{uploadedImage ? <img className="replacement-svg-preview" src={uploadedImage.dataUrl} alt="新图片预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedImage ? `${uploadedImage.width} × ${uploadedImage.height}` : "上传新图片"}</small><strong>{uploadedImage?.fileName || "选择 PNG、JPG、WebP 或 GIF"}</strong></span><b>{uploadedImage ? "重新上传" : "选择文件"}</b></button><input ref={imageFileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={loadImageReplacement} hidden />{imageError && <div className="replacement-error" role="alert">{imageError}</div>}{uploadedImage && <button className="apply-replacement" onClick={() => changeImage(activeImage)}>使用这张图片替换全部引用</button>}<p>新图片会内嵌写入 JSON，原图层的位置、尺寸、透明度和动画保持不变。</p></div></div><footer><span>文件不会上传到服务器</span><button onClick={() => setImageEditorOpen(false)}>关闭</button></footer></div></div>}
