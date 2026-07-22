@@ -330,6 +330,64 @@ function isLottie(data: unknown): data is Record<string, unknown> {
 
 function ComposedMark() { return <span className="composed-mark"><i /><i /><i /></span>; }
 
+function shapePreviewData(data: unknown, shape: ShapeInfo) {
+  const template = findShapeTemplate(data, shape.name, shape.mode);
+  if (!template || (shape.mode !== "lottie-group" && shape.mode !== "lottie-layer")) return null;
+  const root = data && typeof data === "object" ? data as Record<string, unknown> : {};
+  const frameRate = typeof root.fr === "number" ? root.fr : 30;
+  const duration = typeof root.op === "number" ? Math.max(root.op as number, 1) : 60;
+  const layer = shape.mode === "lottie-layer"
+    ? { ...clone(template), ip: 0, op: duration, st: 0 }
+    : { ty: 4, nm: shape.name, shapes: [clone(template)], ks: { o: { a: 0, k: 100 }, r: { a: 0, k: 0 }, p: { a: 0, k: [0, 0, 0] }, a: { a: 0, k: [0, 0, 0] }, s: { a: 0, k: [100, 100, 100] } }, ip: 0, op: duration, st: 0 };
+  return { v: typeof root.v === "string" ? root.v : "5.10.0", fr: frameRate, ip: 0, op: duration, w: typeof root.w === "number" ? root.w : 512, h: typeof root.h === "number" ? root.h : 512, nm: `${shape.name} preview`, ddd: 0, assets: Array.isArray(root.assets) ? clone(root.assets) : [], layers: [layer] } as Record<string, unknown>;
+}
+
+function LottieShapeThumb({ animationData, label }: { animationData: Record<string, unknown>; label: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let animation: AnimationItem | undefined; let active = true; let timer = 0;
+    import("lottie-web/build/player/lottie_light").then(({ default: lottie }) => {
+      if (!active || !ref.current) return;
+      ref.current.innerHTML = "";
+      animation = lottie.loadAnimation({ container: ref.current, renderer: "svg", loop: false, autoplay: false, animationData: clone(animationData) });
+      const fit = () => {
+        if (!ref.current) return;
+        const svg = ref.current.querySelector("svg"); const graphic = svg?.querySelector("g");
+        if (!svg || !graphic) return;
+        try {
+          const box = (graphic as SVGGElement).getBBox();
+          if (box.width > 0 && box.height > 0) {
+            const pad = Math.max(box.width, box.height) * .12;
+            svg.setAttribute("viewBox", `${box.x - pad} ${box.y - pad} ${box.width + pad * 2} ${box.height + pad * 2}`);
+            svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+          }
+        } catch { /* SVG may not be measurable until its first frame. */ }
+      };
+      animation.addEventListener?.("DOMLoaded", () => { animation?.goToAndStop(0, true); timer = window.setTimeout(fit, 30); });
+    });
+    return () => { active = false; window.clearTimeout(timer); animation?.destroy(); };
+  }, [animationData]);
+  return <div ref={ref} className="shape-thumb-canvas" role="img" aria-label={`${label} 形状预览`} />;
+}
+
+function ShapeThumb({ data, shape }: { data: unknown; shape: ShapeInfo }) {
+  const animationData = useMemo(() => shapePreviewData(data, shape), [data, shape]);
+  if (animationData) return <span className="shape-thumb"><LottieShapeThumb animationData={animationData} label={shape.name} /></span>;
+  const template = findShapeTemplate(data, shape.name, shape.mode);
+  const primitives: ShapeName[] = [];
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([key, child]) => {
+      if ((key === "shape" || key === "type" || key === "ty") && typeof child === "string") {
+        const primitive = ALIASES[child.toLowerCase().replace(/[\s_-]/g, "")]; if (primitive) primitives.push(primitive);
+      }
+      visit(child);
+    });
+  };
+  visit(template);
+  return <span className="shape-thumb shape-thumb-generic">{primitives.slice(0, 4).map((primitive, index) => <i key={`${primitive}-${index}`} className={`shape shape-${primitive}`} />)}{!primitives.length && <ComposedMark />}</span>;
+}
+
 function LottiePreview({ data }: { data: Record<string, unknown> }) {
   const ref = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
@@ -452,7 +510,7 @@ export default function Home() {
       <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、组合矢量和图片资源的本地批量替换。</p></div></aside>
       <section className="editor-panel"><div className="section-head"><div><span className="index">{tabMeta.number}</span><h2>{tabMeta.title}</h2><span className="en">{tabMeta.english}</span></div><p>{tabMeta.description}</p></div>
         {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><button className="picker-button" onClick={() => setColorEditor({ current: color.hex, draft: color.hex, count: color.count })}><span className="picker-chip" style={{ background: color.hex }} />选择颜色</button></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> : activeTab === "shapes" ?
-        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => setSelectedShape(id)}><ComposedMark /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div>{activeShape && <div className="replace-card"><span className="replace-kicker">SVG REPLACEMENT</span><h3>替换全部「{activeShape.name}」</h3><div className="composed-current"><ComposedMark /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}>{uploadedSvg ? <img className="replacement-svg-preview" src={uploadedSvg.preview} alt="上传的 SVG 预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedSvg ? "已转换为矢量路径" : "上传替换形状"}</small><strong>{uploadedSvg?.fileName || "选择 SVG 文件"}</strong></span><b>{uploadedSvg ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="image/svg+xml,.svg" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{uploadedSvg && <><div className="replacement-summary"><span>已转换的矢量部分</span><b>{uploadedSvg.partCount}</b></div><button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape)} disabled={activeShape.mode === "reference"}>使用这个 SVG 替换全部同名形状</button>{activeShape.mode === "reference" && <div className="replacement-empty">当前目标是外部引用，不能直接写入 SVG 路径。</div>}</>}<p>SVG 会转换为 JSON 内的矢量路径，同时保留主文件中同名实例的位置、缩放和动画变换。文件只在本地浏览器中处理。</p></div>}</div> :
+        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => setSelectedShape(id)}><ShapeThumb data={data} shape={shape} /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div>{activeShape && <div className="replace-card"><span className="replace-kicker">SVG REPLACEMENT</span><h3>替换全部「{activeShape.name}」</h3><div className="composed-current"><ShapeThumb data={data} shape={activeShape} /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}>{uploadedSvg ? <img className="replacement-svg-preview" src={uploadedSvg.preview} alt="上传的 SVG 预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedSvg ? "已转换为矢量路径" : "上传替换形状"}</small><strong>{uploadedSvg?.fileName || "选择 SVG 文件"}</strong></span><b>{uploadedSvg ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="image/svg+xml,.svg" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{uploadedSvg && <><div className="replacement-summary"><span>已转换的矢量部分</span><b>{uploadedSvg.partCount}</b></div><button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape)} disabled={activeShape.mode === "reference"}>使用这个 SVG 替换全部同名形状</button>{activeShape.mode === "reference" && <div className="replacement-empty">当前目标是外部引用，不能直接写入 SVG 路径。</div>}</>}<p>SVG 会转换为 JSON 内的矢量路径，同时保留主文件中同名实例的位置、缩放和动画变换。文件只在本地浏览器中处理。</p></div>}</div> :
         <div className="image-workbench"><div className="image-list">{images.map((item) => <button key={item.id} className={activeImage?.id === item.id ? "image-row selected" : "image-row"} onClick={() => { setSelectedImage(item.id); setUploadedImage(null); setImageError(""); }}><span className="image-thumb"><ImageThumb source={item.preview} label={item.name} /></span><span><strong>{item.name}</strong><small>{item.mode === "lottie-asset" ? "Lottie 图片资源" : item.key}</small></span><b>× {item.count}</b></button>)}{!images.length && <Empty text="暂未识别到图片资源；支持 Lottie assets 和常见图片地址字段" />}</div>{activeImage && <div className="replace-card image-replace-card"><span className="replace-kicker">IMAGE REPLACEMENT</span><h3>替换「{activeImage.name}」</h3><div className="current-image"><span className="current-image-preview"><ImageThumb source={activeImage.preview} label={activeImage.name} /></span><span><small>当前资源</small><strong>{activeImage.name}</strong><em>{activeImage.count} 个引用</em></span></div><button className="replacement-upload image-upload" onClick={() => imageFileRef.current?.click()}>{uploadedImage ? <img className="replacement-svg-preview" src={uploadedImage.dataUrl} alt="新图片预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedImage ? `${uploadedImage.width} × ${uploadedImage.height}` : "上传新图片"}</small><strong>{uploadedImage?.fileName || "选择 PNG、JPG、WebP 或 GIF"}</strong></span><b>{uploadedImage ? "重新上传" : "选择文件"}</b></button><input ref={imageFileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={loadImageReplacement} hidden />{imageError && <div className="replacement-error" role="alert">{imageError}</div>}{uploadedImage && <button className="apply-replacement" onClick={() => changeImage(activeImage)}>使用这张图片替换全部引用</button>}<p>新图片会内嵌写入 JSON。原图层的位置、尺寸、透明度和动画保持不变，文件不会上传到服务器。</p></div>}</div>}
       </section>
       <aside className="json-panel"><div className="panel-tabs"><button className={inspectorTab === "preview" ? "active" : ""} onClick={() => setInspectorTab("preview")}><span className="status-dot" />视觉预览</button><button className={inspectorTab === "json" ? "active" : ""} onClick={() => setInspectorTab("json")}>实时 JSON</button></div>{inspectorTab === "preview" ? <div className="preview-panel"><div className="preview-head"><span>{isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS · {shapes.length} SHAPES · {images.length} IMAGES</b></div><VisualPreview data={data} colors={colors} shapes={shapes} images={images} /><div className="preview-foot">修改颜色、形状或图片后自动刷新</div></div> : <><div className="json-head"><div><span className="status-dot" /> 已同步</div><button onClick={() => navigator.clipboard.writeText(jsonText).then(() => setToast("JSON 已复制"))}>复制</button></div><pre>{jsonText.split("\n").map((line, i) => <code key={i}><span>{String(i + 1).padStart(2, "0")}</span>{line}</code>)}</pre><div className="json-foot"><span>{jsonText.split("\n").length} 行</span><span>UTF-8</span></div></>}</aside>

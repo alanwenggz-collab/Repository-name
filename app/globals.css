@@ -77,14 +77,21 @@ h2 { font-family:Georgia,"Noto Serif SC",serif; font-size:28px; margin:0; font-w
 .image-thumb { width:48px; height:48px; }
 .image-thumb img,.current-image-preview img { width:100%; height:100%; object-fit:contain; }
 .image-placeholder { color:#888; font:8px "Courier New",monospace; letter-spacing:1px; }
-.shape-row { width:100%; display:grid; grid-template-columns:38px 1fr auto; align-items:center; text-align:left; border:0; border-bottom:1px solid #ece9e4; background:white; padding:15px; cursor:pointer; }
+.shape-row { width:100%; min-height:76px; display:grid; grid-template-columns:54px 1fr auto; gap:11px; align-items:center; text-align:left; border:0; border-bottom:1px solid #ece9e4; background:white; padding:10px 13px; cursor:pointer; }
 .shape-row:last-child { border-bottom:0; }
 .shape-row.selected { background:#ece8ff; box-shadow:inset 3px 0 var(--violet); }
-.shape-row span:nth-child(2) { margin-left:8px; }
 .shape-row strong,.shape-row small { display:block; }
 .shape-row strong { font-size:12px; }
 .shape-row small { font:9px "Courier New",monospace; color:var(--muted); margin-top:4px; }
 .shape-row b { font:10px "Courier New",monospace; color:var(--violet); }
+.shape-thumb { width:54px; height:54px; display:grid; place-items:center; overflow:hidden; background:#f0ede7; border:1px solid #d9d4cb; color:var(--violet); flex:0 0 auto; }
+.shape-thumb-canvas,.shape-thumb-canvas svg { width:100%!important; height:100%!important; display:block; }
+.shape-thumb-generic { position:relative; }
+.shape-thumb-generic>.shape { position:absolute; width:24px; height:24px; opacity:.82; }
+.shape-thumb-generic>.shape:nth-child(1) { transform:translate(-8px,-7px); }
+.shape-thumb-generic>.shape:nth-child(2) { transform:translate(9px,-4px) rotate(8deg); opacity:.58; }
+.shape-thumb-generic>.shape:nth-child(3) { transform:translate(-3px,10px) scale(.78); opacity:.7; }
+.shape-thumb-generic>.shape:nth-child(4) { transform:translate(11px,11px) scale(.55); opacity:.48; }
 .composed-mark { width:34px; height:34px; display:inline-block; position:relative; color:inherit; flex:0 0 auto; }
 .composed-mark i { position:absolute; display:block; background:currentColor; }
 .composed-mark i:nth-child(1) { width:20px; height:20px; left:1px; top:3px; border-radius:50%; opacity:.42; }
@@ -100,6 +107,7 @@ h2 { font-family:Georgia,"Noto Serif SC",serif; font-size:28px; margin:0; font-w
 .shape-options button { width:52px; height:52px; border:1px solid #444; background:#292929; color:white; cursor:pointer; }
 .shape-options button:hover { border-color:#a991ff; background:#3c315c; }
 .composed-current { min-height:72px; border:1px solid #444; background:#242424; display:flex; align-items:center; gap:14px; padding:14px; color:#a991ff; }
+.composed-current .shape-thumb { width:58px; height:58px; background:#f4f1eb; border-color:#454545; }
 .composed-current small,.composed-current strong { display:block; }
 .composed-current small { font:8px "Courier New",monospace; color:#777; text-transform:uppercase; margin-bottom:6px; }
 .composed-current strong { color:#fff; font-size:12px; }
