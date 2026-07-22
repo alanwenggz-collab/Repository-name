@@ -7,6 +7,8 @@ type ShapeName = "circle" | "square" | "triangle" | "star" | "heart" | "hexagon"
 type ColorInfo = { hex: string; label: string; count: number };
 type ShapeInfo = { name: string; count: number; mode: "lottie-group" | "lottie-layer" | "component" | "reference" };
 type UploadedSvg = { fileName: string; name: string; preview: string; raw: string; group: Record<string, unknown>; partCount: number };
+type ImageInfo = { id: string; name: string; value: string; preview: string; count: number; mode: "lottie-asset" | "field"; assetId?: string; key?: string };
+type UploadedImage = { fileName: string; dataUrl: string; width: number; height: number; size: number };
 
 const SAMPLE = {
   name: "summer-campaign",
@@ -113,6 +115,71 @@ function scanShapes(data: unknown) {
     else if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([childKey, child]) => scan(child, childKey));
   };
   scan(data); return [...map.values()];
+}
+
+const IMAGE_KEY = /^(src|url|path|image|imageurl|image_url|href|poster|thumbnail|backgroundimage|background_image)$/i;
+const IMAGE_VALUE = /^(data:image\/|blob:|https?:\/\/)|\.(png|jpe?g|webp|gif|avif)(\?.*)?$/i;
+
+function previewableImageSource(source: string) {
+  return /^(data:image\/|blob:|https?:\/\/)/i.test(source) ? source : "";
+}
+
+function scanImages(data: unknown) {
+  const images: ImageInfo[] = [];
+  const referenceNames = new Map<string, { names: Set<string>; count: number }>();
+  const collectReferences = (value: unknown) => {
+    if (Array.isArray(value)) value.forEach(collectReferences);
+    else if (value && typeof value === "object") {
+      const object = value as Record<string, unknown>;
+      if (typeof object.refId === "string") {
+        const current = referenceNames.get(object.refId) || { names: new Set<string>(), count: 0 };
+        if (typeof object.nm === "string" && object.nm.trim()) current.names.add(object.nm.trim()); current.count += 1; referenceNames.set(object.refId, current);
+      }
+      Object.values(object).forEach(collectReferences);
+    }
+  };
+  collectReferences(data);
+  if (data && typeof data === "object" && Array.isArray((data as Record<string, unknown>).assets)) {
+    ((data as Record<string, unknown>).assets as unknown[]).forEach((asset, index) => {
+      if (!asset || typeof asset !== "object") return;
+      const object = asset as Record<string, unknown>; if (typeof object.p !== "string" || !object.p.trim()) return;
+      const assetId = typeof object.id === "string" ? object.id : `asset-${index}`; const refs = referenceNames.get(assetId);
+      const joined = `${typeof object.u === "string" ? object.u : ""}${object.p}`; const source = /^(data:image\/|blob:|https?:\/\/)/i.test(object.p) ? object.p : joined;
+      const fallbackName = object.p.split("/").pop()?.split("?")[0] || assetId; const name = refs?.names.size ? [...refs.names].join(" / ") : typeof object.nm === "string" ? object.nm : fallbackName;
+      images.push({ id: `lottie:${assetId}`, name, value: object.p, preview: previewableImageSource(source), count: refs?.count || 1, mode: "lottie-asset", assetId });
+    });
+  }
+  const fieldMap = new Map<string, ImageInfo>();
+  const scanFields = (value: unknown) => {
+    if (Array.isArray(value)) value.forEach(scanFields);
+    else if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([key, child]) => {
+      if (typeof child === "string" && IMAGE_KEY.test(key) && IMAGE_VALUE.test(child)) {
+        const id = `field:${key}:${child}`; const current = fieldMap.get(id);
+        fieldMap.set(id, { id, name: key, value: child, preview: previewableImageSource(child), count: (current?.count || 0) + 1, mode: "field", key });
+      } else scanFields(child);
+    });
+  };
+  scanFields(data); return [...images, ...fieldMap.values()];
+}
+
+function replaceImageResource(data: unknown, target: ImageInfo, dataUrl: string): unknown {
+  if (Array.isArray(data)) return data.map((item) => replaceImageResource(item, target, dataUrl));
+  if (data && typeof data === "object") {
+    const object = data as Record<string, unknown>;
+    if (target.mode === "lottie-asset" && object.id === target.assetId && object.p === target.value) return { ...object, u: "", p: dataUrl, e: 1 };
+    return Object.fromEntries(Object.entries(object).map(([key, child]) => [key, target.mode === "field" && key === target.key && child === target.value ? dataUrl : replaceImageResource(child, target, dataUrl)]));
+  }
+  return data;
+}
+
+function readImageFile(file: File): Promise<UploadedImage> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader(); reader.onerror = () => reject(new Error("READ_FAILED")); reader.readAsDataURL(file);
+    reader.onload = () => {
+      const dataUrl = String(reader.result || ""); const image = new Image(); image.onerror = () => reject(new Error("INVALID_IMAGE"));
+      image.onload = () => resolve({ fileName: file.name, dataUrl, width: image.naturalWidth, height: image.naturalHeight, size: file.size }); image.src = dataUrl;
+    };
+  });
 }
 
 function colorForOriginal(original: unknown, hex: string): unknown {
@@ -279,40 +346,56 @@ function LottiePreview({ data }: { data: Record<string, unknown> }) {
   return failed ? <div className="preview-message">动画结构无法直接渲染，已显示识别到的视觉元素。</div> : <div ref={ref} className="lottie-stage" />;
 }
 
-function VisualPreview({ data, colors, shapes }: { data: unknown; colors: ColorInfo[]; shapes: ShapeInfo[] }) {
+function ImageThumb({ source, label }: { source: string; label: string }) {
+  return source ? <img src={source} alt={label} /> : <span className="image-placeholder">IMG</span>;
+}
+
+function VisualPreview({ data, colors, shapes, images }: { data: unknown; colors: ColorInfo[]; shapes: ShapeInfo[]; images: ImageInfo[] }) {
   const items = shapes.flatMap((shape) => Array.from({ length: Math.min(shape.count, 6) }, () => shape)).slice(0, 24);
   if (isLottie(data)) return <LottiePreview data={data} />;
   return <div className="token-stage" style={{ background: colors.find((c) => c.hex === "#FFFFFF")?.hex || "#F6F5F2" }}>
+    {images.slice(0, 8).map((item) => <div className="preview-image" key={item.id}><ImageThumb source={item.preview} label={item.name} /><small>{item.name}</small></div>)}
     {items.map((item, index) => <div className="preview-object" key={`${item.name}-${index}`} style={{ color: colors[index % Math.max(colors.length, 1)]?.hex || "#7557E8" }}><ComposedMark /><small>{item.name}</small></div>)}
-    {!items.length && colors.map((color) => <div className="preview-color" key={color.hex} style={{ background: color.hex }}><span>{color.hex}</span></div>)}
-    {!items.length && !colors.length && <div className="preview-message">暂未找到可视化元素<br /><small>支持 CSS、RGB 数组、Lottie 颜色与常见形状字段</small></div>}
+    {!items.length && !images.length && colors.map((color) => <div className="preview-color" key={color.hex} style={{ background: color.hex }}><span>{color.hex}</span></div>)}
+    {!items.length && !images.length && !colors.length && <div className="preview-message">暂未找到可视化元素<br /><small>支持颜色、命名组合、Lottie 与常见图片字段</small></div>}
   </div>;
 }
 
 export default function Home() {
   const [data, setData] = useState<unknown>(SAMPLE);
   const [fileName, setFileName] = useState("summer-campaign.json");
-  const [activeTab, setActiveTab] = useState<"colors" | "shapes">("colors");
+  const [activeTab, setActiveTab] = useState<"colors" | "shapes" | "images">("colors");
   const [inspectorTab, setInspectorTab] = useState<"preview" | "json">("preview");
   const [selectedShape, setSelectedShape] = useState("");
+  const [selectedImage, setSelectedImage] = useState("");
   const [uploadedSvg, setUploadedSvg] = useState<UploadedSvg | null>(null);
+  const [uploadedImage, setUploadedImage] = useState<UploadedImage | null>(null);
   const [replacementError, setReplacementError] = useState("");
+  const [imageError, setImageError] = useState("");
   const [colorEditor, setColorEditor] = useState<{ current: string; draft: string; count: number } | null>(null);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("已识别示例 JSON");
   const fileRef = useRef<HTMLInputElement>(null);
   const replacementFileRef = useRef<HTMLInputElement>(null);
+  const imageFileRef = useRef<HTMLInputElement>(null);
   const colors = useMemo(() => scanColors(data), [data]);
   const shapes = useMemo(() => scanShapes(data), [data]);
+  const images = useMemo(() => scanImages(data), [data]);
   const jsonText = useMemo(() => JSON.stringify(data, null, 2), [data]);
   const activeShape = shapes.find((item) => `${item.mode}:${item.name}` === selectedShape) || shapes[0];
+  const activeImage = images.find((item) => item.id === selectedImage) || images[0];
+  const tabMeta = activeTab === "colors"
+    ? { number: "01", title: "颜色", english: "COLORS", description: `识别到 ${colors.length} 种颜色；编辑窗口会保持开启。` }
+    : activeTab === "shapes"
+      ? { number: "02", title: "组合形状", english: "GROUPS", description: "选择主文件中的组合，再上传 SVG 作为新的矢量结构。" }
+      : { number: "03", title: "图片资源", english: "IMAGES", description: `识别到 ${images.length} 个图片资源；替换后保留原图层布局与动画。` };
 
   const loadFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; if (!file) return;
     try {
-      const parsed = JSON.parse(await file.text()); setData(parsed); setFileName(file.name); setError(""); setSelectedShape(""); setInspectorTab("preview");
-      const foundColors = scanColors(parsed).length; const foundShapes = scanShapes(parsed).length;
-      setToast(`识别完成：${foundColors} 种颜色，${foundShapes} 种形状`);
+      const parsed = JSON.parse(await file.text()); setData(parsed); setFileName(file.name); setError(""); setSelectedShape(""); setSelectedImage(""); setUploadedImage(null); setInspectorTab("preview");
+      const foundColors = scanColors(parsed).length; const foundShapes = scanShapes(parsed).length; const foundImages = scanImages(parsed).length;
+      setToast(`识别完成：${foundColors} 种颜色，${foundShapes} 种形状，${foundImages} 个图片资源`);
     } catch { setError("无法解析这个文件，请检查 JSON 格式后重试。"); }
     event.target.value = "";
   };
@@ -336,6 +419,19 @@ export default function Home() {
     const next = to.toUpperCase(); const from = colorEditor.current;
     setData((current: unknown) => replaceColor(current, from, next)); setColorEditor({ ...colorEditor, current: next, draft: next }); setInspectorTab("preview"); setToast(`已替换 ${from} 的全部引用`);
   };
+  const loadImageReplacement = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]; if (!file) return;
+    try {
+      if (!/^image\/(png|jpeg|webp|gif)$/i.test(file.type)) throw new Error("UNSUPPORTED_IMAGE");
+      const loaded = await readImageFile(file); setUploadedImage(loaded); setImageError(""); setToast(`图片已读取：${loaded.width} × ${loaded.height}`);
+    } catch { setImageError("无法读取图片，请上传 PNG、JPG、WebP 或 GIF 文件。"); }
+    finally { event.target.value = ""; }
+  };
+  const changeImage = (target: ImageInfo) => {
+    if (!uploadedImage) return;
+    setData((current: unknown) => replaceImageResource(current, target, uploadedImage.dataUrl)); setInspectorTab("preview"); setImageError("");
+    setToast(`已替换 ${target.count} 个「${target.name}」图片引用`);
+  };
   const changeShapeFromUpload = (from: ShapeInfo) => {
     if (!uploadedSvg) return;
     if (from.mode === "reference") { setReplacementError("当前目标只是外部引用，无法写入 SVG 路径。请选择组合、组件或 Lottie 图层。"); return; }
@@ -350,15 +446,16 @@ export default function Home() {
 
   return <main>
     <header className="topbar"><a className="brand" href="#" aria-label="Jsonicle 首页"><span className="brand-mark">J</span><span>Jsonicle</span></a><div className="top-actions"><span className="privacy"><span className="lock">◆</span>文件仅在本地处理</span><button className="button button-ghost" onClick={() => fileRef.current?.click()}>＋ 上传文件</button><button className="button button-dark" onClick={download}>下载 JSON <span>↓</span></button></div></header>
-    <section className="hero"><div><span className="eyebrow">VISUAL JSON EDITOR · 03</span><h1>找到它，<em>看到它。</em></h1><p>识别颜色与已经拼合完成的命名形状；基础图元不会再作为独立形状出现。</p></div><button className="file-card" onClick={() => fileRef.current?.click()}><span className="file-icon">{"{ }"}</span><span><strong>{fileName}</strong><small>{(new Blob([jsonText]).size / 1024).toFixed(1)} KB · {isLottie(data) ? "LOTTIE JSON" : "JSON"}</small></span><span className="file-change">更换文件</span></button><input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /></section>
+    <section className="hero"><div><span className="eyebrow">VISUAL JSON EDITOR · 03</span><h1>找到它，<em>看到它。</em></h1><p>识别并批量替换颜色、组合形状和图片资源，修改结果会实时写回 JSON。</p></div><button className="file-card" onClick={() => fileRef.current?.click()}><span className="file-icon">{"{ }"}</span><span><strong>{fileName}</strong><small>{(new Blob([jsonText]).size / 1024).toFixed(1)} KB · {isLottie(data) ? "LOTTIE JSON" : "JSON"}</small></span><span className="file-change">更换文件</span></button><input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden /></section>
     {error && <div className="error" role="alert">{error}</div>}
     <section className="workspace">
-      <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><div className="rail-note"><span>↗</span><p>只识别命名组、图层和组件，不包含圆形、矩形或路径图元。</p></div></aside>
-      <section className="editor-panel"><div className="section-head"><div><span className="index">0{activeTab === "colors" ? "1" : "2"}</span><h2>{activeTab === "colors" ? "颜色" : "组合形状"}</h2><span className="en">{activeTab === "colors" ? "COLORS" : "GROUPS"}</span></div><p>{activeTab === "colors" ? `识别到 ${colors.length} 种颜色；编辑窗口会保持开启。` : `选择主文件中的组合，再上传 SVG 作为新的矢量结构。`}</p></div>
-        {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><button className="picker-button" onClick={() => setColorEditor({ current: color.hex, draft: color.hex, count: color.count })}><span className="picker-chip" style={{ background: color.hex }} />选择颜色</button></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> :
-        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => setSelectedShape(id)}><ComposedMark /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div>{activeShape && <div className="replace-card"><span className="replace-kicker">SVG REPLACEMENT</span><h3>替换全部「{activeShape.name}」</h3><div className="composed-current"><ComposedMark /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}>{uploadedSvg ? <img className="replacement-svg-preview" src={uploadedSvg.preview} alt="上传的 SVG 预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedSvg ? "已转换为矢量路径" : "上传替换形状"}</small><strong>{uploadedSvg?.fileName || "选择 SVG 文件"}</strong></span><b>{uploadedSvg ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="image/svg+xml,.svg" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{uploadedSvg && <><div className="replacement-summary"><span>已转换的矢量部分</span><b>{uploadedSvg.partCount}</b></div><button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape)} disabled={activeShape.mode === "reference"}>使用这个 SVG 替换全部同名形状</button>{activeShape.mode === "reference" && <div className="replacement-empty">当前目标是外部引用，不能直接写入 SVG 路径。</div>}</>}<p>SVG 会转换为 JSON 内的矢量路径，同时保留主文件中同名实例的位置、缩放和动画变换。文件只在本地浏览器中处理。</p></div>}</div>}
+      <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、组合矢量和图片资源的本地批量替换。</p></div></aside>
+      <section className="editor-panel"><div className="section-head"><div><span className="index">{tabMeta.number}</span><h2>{tabMeta.title}</h2><span className="en">{tabMeta.english}</span></div><p>{tabMeta.description}</p></div>
+        {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><button className="picker-button" onClick={() => setColorEditor({ current: color.hex, draft: color.hex, count: color.count })}><span className="picker-chip" style={{ background: color.hex }} />选择颜色</button></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> : activeTab === "shapes" ?
+        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => setSelectedShape(id)}><ComposedMark /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div>{activeShape && <div className="replace-card"><span className="replace-kicker">SVG REPLACEMENT</span><h3>替换全部「{activeShape.name}」</h3><div className="composed-current"><ComposedMark /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}>{uploadedSvg ? <img className="replacement-svg-preview" src={uploadedSvg.preview} alt="上传的 SVG 预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedSvg ? "已转换为矢量路径" : "上传替换形状"}</small><strong>{uploadedSvg?.fileName || "选择 SVG 文件"}</strong></span><b>{uploadedSvg ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="image/svg+xml,.svg" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{uploadedSvg && <><div className="replacement-summary"><span>已转换的矢量部分</span><b>{uploadedSvg.partCount}</b></div><button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape)} disabled={activeShape.mode === "reference"}>使用这个 SVG 替换全部同名形状</button>{activeShape.mode === "reference" && <div className="replacement-empty">当前目标是外部引用，不能直接写入 SVG 路径。</div>}</>}<p>SVG 会转换为 JSON 内的矢量路径，同时保留主文件中同名实例的位置、缩放和动画变换。文件只在本地浏览器中处理。</p></div>}</div> :
+        <div className="image-workbench"><div className="image-list">{images.map((item) => <button key={item.id} className={activeImage?.id === item.id ? "image-row selected" : "image-row"} onClick={() => { setSelectedImage(item.id); setUploadedImage(null); setImageError(""); }}><span className="image-thumb"><ImageThumb source={item.preview} label={item.name} /></span><span><strong>{item.name}</strong><small>{item.mode === "lottie-asset" ? "Lottie 图片资源" : item.key}</small></span><b>× {item.count}</b></button>)}{!images.length && <Empty text="暂未识别到图片资源；支持 Lottie assets 和常见图片地址字段" />}</div>{activeImage && <div className="replace-card image-replace-card"><span className="replace-kicker">IMAGE REPLACEMENT</span><h3>替换「{activeImage.name}」</h3><div className="current-image"><span className="current-image-preview"><ImageThumb source={activeImage.preview} label={activeImage.name} /></span><span><small>当前资源</small><strong>{activeImage.name}</strong><em>{activeImage.count} 个引用</em></span></div><button className="replacement-upload image-upload" onClick={() => imageFileRef.current?.click()}>{uploadedImage ? <img className="replacement-svg-preview" src={uploadedImage.dataUrl} alt="新图片预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedImage ? `${uploadedImage.width} × ${uploadedImage.height}` : "上传新图片"}</small><strong>{uploadedImage?.fileName || "选择 PNG、JPG、WebP 或 GIF"}</strong></span><b>{uploadedImage ? "重新上传" : "选择文件"}</b></button><input ref={imageFileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={loadImageReplacement} hidden />{imageError && <div className="replacement-error" role="alert">{imageError}</div>}{uploadedImage && <button className="apply-replacement" onClick={() => changeImage(activeImage)}>使用这张图片替换全部引用</button>}<p>新图片会内嵌写入 JSON。原图层的位置、尺寸、透明度和动画保持不变，文件不会上传到服务器。</p></div>}</div>}
       </section>
-      <aside className="json-panel"><div className="panel-tabs"><button className={inspectorTab === "preview" ? "active" : ""} onClick={() => setInspectorTab("preview")}><span className="status-dot" />视觉预览</button><button className={inspectorTab === "json" ? "active" : ""} onClick={() => setInspectorTab("json")}>实时 JSON</button></div>{inspectorTab === "preview" ? <div className="preview-panel"><div className="preview-head"><span>{isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS · {shapes.length} SHAPES</b></div><VisualPreview data={data} colors={colors} shapes={shapes} /><div className="preview-foot">修改颜色或形状后自动刷新</div></div> : <><div className="json-head"><div><span className="status-dot" /> 已同步</div><button onClick={() => navigator.clipboard.writeText(jsonText).then(() => setToast("JSON 已复制"))}>复制</button></div><pre>{jsonText.split("\n").map((line, i) => <code key={i}><span>{String(i + 1).padStart(2, "0")}</span>{line}</code>)}</pre><div className="json-foot"><span>{jsonText.split("\n").length} 行</span><span>UTF-8</span></div></>}</aside>
+      <aside className="json-panel"><div className="panel-tabs"><button className={inspectorTab === "preview" ? "active" : ""} onClick={() => setInspectorTab("preview")}><span className="status-dot" />视觉预览</button><button className={inspectorTab === "json" ? "active" : ""} onClick={() => setInspectorTab("json")}>实时 JSON</button></div>{inspectorTab === "preview" ? <div className="preview-panel"><div className="preview-head"><span>{isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS · {shapes.length} SHAPES · {images.length} IMAGES</b></div><VisualPreview data={data} colors={colors} shapes={shapes} images={images} /><div className="preview-foot">修改颜色、形状或图片后自动刷新</div></div> : <><div className="json-head"><div><span className="status-dot" /> 已同步</div><button onClick={() => navigator.clipboard.writeText(jsonText).then(() => setToast("JSON 已复制"))}>复制</button></div><pre>{jsonText.split("\n").map((line, i) => <code key={i}><span>{String(i + 1).padStart(2, "0")}</span>{line}</code>)}</pre><div className="json-foot"><span>{jsonText.split("\n").length} 行</span><span>UTF-8</span></div></>}</aside>
     </section>
     {colorEditor && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="颜色编辑器"><div className="color-dialog"><header><div><span className="eyebrow">COLOR EDITOR</span><h3>替换颜色</h3></div><button onClick={() => setColorEditor(null)} aria-label="关闭颜色编辑器">×</button></header><div className="color-dialog-main"><label className="large-picker" style={{ background: colorEditor.current }}><input type="color" value={colorEditor.current} onChange={(event) => changeColor(event.target.value)} /><span>点击选择色彩</span></label><div className="color-values"><label>HEX 色值</label><div><input value={colorEditor.draft} onChange={(event) => setColorEditor({ ...colorEditor, draft: event.target.value.toUpperCase() })} /><button onClick={() => changeColor(colorEditor.draft)}>应用</button></div><small>将同步修改 {colorEditor.count} 个引用，窗口不会自动关闭。</small></div></div><div className="quick-colors">{["#171717", "#FFFFFF", "#7557E8", "#FF6B4A", "#FFCD56", "#3AA16E"].map((hex) => <button key={hex} style={{ background: hex }} onClick={() => changeColor(hex)} aria-label={`选择 ${hex}`} />)}</div><footer><span>修改已实时写入预览和 JSON</span><button onClick={() => setColorEditor(null)}>关闭</button></footer></div></div>}
     <div className="toast" aria-live="polite"><span>✓</span>{toast}</div>
