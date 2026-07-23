@@ -704,6 +704,40 @@ function MagicCube({ compact = false }: { compact?: boolean }) {
   </div>;
 }
 
+const LANDING_STEPS = [
+  { number: "01", label: "上传" },
+  { number: "02", label: "预览与代码" },
+  { number: "03", label: "修改元素" },
+];
+
+function LandingGuideVisual({ step }: { step: number }) {
+  if (step === 1) return <div className="landing-guide-visual circuit-visual" role="img" aria-label="魔方落入接口并激活电路地面">
+    <div className="circuit-floor" aria-hidden="true">
+      <span className="circuit-hole" />
+      {Array.from({ length: 8 }, (_, index) => <i key={index} />)}
+      {Array.from({ length: 7 }, (_, index) => <b key={index} />)}
+    </div>
+    <div className="cube-seat"><MagicCube compact /></div>
+    <div className="activation-wave" aria-hidden="true" />
+    <span className="visual-status">STRUCTURE ONLINE</span>
+  </div>;
+
+  if (step === 2) return <div className="landing-guide-visual morph-visual" role="img" aria-label="魔方平滑转变为可编辑的数据球">
+    <div className="morph-source"><MagicCube compact /></div>
+    <div className="data-orb" aria-hidden="true">
+      {Array.from({ length: 16 }, (_, index) => <span key={index} />)}
+    </div>
+    <div className="orb-ring ring-one" aria-hidden="true" />
+    <div className="orb-ring ring-two" aria-hidden="true" />
+    <span className="visual-status">ELEMENTS UNLOCKED</span>
+  </div>;
+
+  return <div className="landing-guide-visual upload-visual" role="img" aria-label="等待上传文件的 Jsonable 魔方">
+    <MagicCube compact />
+    <span className="visual-status">READY FOR INPUT</span>
+  </div>;
+}
+
 function VisualPreview({ data, colors, shapes, images, isDefault }: { data: unknown; colors: ColorInfo[]; shapes: ShapeInfo[]; images: ImageInfo[]; isDefault: boolean }) {
   if (isDefault) return <div className="token-stage default-cube-stage"><MagicCube /></div>;
   const items = shapes.flatMap((shape) => Array.from({ length: Math.min(shape.count, 6) }, () => shape)).slice(0, 24);
@@ -749,6 +783,8 @@ export default function Home() {
   const [mediaConversionError, setMediaConversionError] = useState("");
   const [isDraggingJson, setIsDraggingJson] = useState(false);
   const [isDraggingLanding, setIsDraggingLanding] = useState(false);
+  const [landingStep, setLandingStep] = useState(0);
+  const [landingCycle, setLandingCycle] = useState(0);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const replacementFileRef = useRef<HTMLInputElement>(null);
@@ -785,6 +821,14 @@ export default function Home() {
     const timer = window.setTimeout(() => setToast(""), 2800);
     return () => window.clearTimeout(timer);
   }, [toast]);
+  useEffect(() => {
+    if (hasUploadedFile) return;
+    const timer = window.setTimeout(() => {
+      setLandingStep((current) => (current + 1) % LANDING_STEPS.length);
+      setLandingCycle((current) => current + 1);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [hasUploadedFile, landingStep, landingCycle]);
   useEffect(() => { setCompressionCountdown(null); setCompressionResult(null); setCompressionReportOpen(false); }, [data]);
   useEffect(() => {
     if (compressionCountdown === null) return;
@@ -961,7 +1005,7 @@ export default function Home() {
     a.href = url; a.download = `${baseName}-optimized.lottie`; a.click(); URL.revokeObjectURL(url); setToast("dotLottie 文件已导出");
   };
   const goHome = () => {
-    setData(SAMPLE); setOriginalData(SAMPLE); setHasUploadedFile(false); setFileName("summer-campaign.json"); setActiveTab("colors"); setInspectorTab("preview"); setSelectedShape(""); setSelectedImage(""); setUploadedSvg(null); setUploadedImage(null); setColorEditor(null); setShapeEditorOpen(false); setImageEditorOpen(false); setHistoryOpen(false); setCompressionReportOpen(false); setCompressionCountdown(null); setCompressionResult(null); setMediaConversion(null); setMediaConversionError(""); setError("");
+    setData(SAMPLE); setOriginalData(SAMPLE); setHasUploadedFile(false); setFileName("summer-campaign.json"); setActiveTab("colors"); setInspectorTab("preview"); setSelectedShape(""); setSelectedImage(""); setUploadedSvg(null); setUploadedImage(null); setColorEditor(null); setShapeEditorOpen(false); setImageEditorOpen(false); setHistoryOpen(false); setCompressionReportOpen(false); setCompressionCountdown(null); setCompressionResult(null); setMediaConversion(null); setMediaConversionError(""); setError(""); setLandingStep(0); setLandingCycle((current) => current + 1);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
   return <main>
@@ -975,8 +1019,8 @@ export default function Home() {
     </header>
     <input ref={unifiedFileRef} type="file" accept="application/json,.json,video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={unifiedUpload} hidden />
     {!hasUploadedFile ? <section className={isDraggingLanding ? "landing-hero is-dragging" : "landing-hero"} onDragEnter={(event) => { event.preventDefault(); setIsDraggingLanding(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDraggingLanding(false); }} onDrop={dropUnified}>
-      <div className="landing-copy"><span className="eyebrow">VISUAL JSON EDITOR</span><h1>先把文件放进来，<br /><em>再把每一层看清。</em></h1><p>JSON、MP4、GIF、APNG 与序列帧都可以。媒体文件会先转换成可播放、可编辑的 Lottie JSON。</p><div className="landing-steps"><span>01 上传</span><span>02 预览与代码</span><span>03 修改元素</span></div></div>
-      <div className="landing-upload"><MagicCube compact /><button onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "正在转换媒体..." : "选择文件"}<span>＋</span></button><strong>或把文件拖到这里</strong><small>支持单个 JSON / 视频 / 动图，也支持多选序列帧</small>{mediaConversionError && <em>{mediaConversionError}</em>}{isDraggingLanding && <div className="landing-drop-state">松开开始处理</div>}</div>
+      <div className="landing-copy"><span className="eyebrow">VISUAL JSON EDITOR</span><h1>先把文件放进来，<br /><em>再把每一层看清。</em></h1><p>JSON、MP4、GIF、APNG 与序列帧都可以。媒体文件会先转换成可播放、可编辑的 Lottie JSON。</p><div className="landing-steps" role="tablist" aria-label="Jsonable 使用流程">{LANDING_STEPS.map((item, index) => <button key={`${item.number}-${index === landingStep ? landingCycle : "idle"}`} type="button" role="tab" aria-selected={index === landingStep} className={index === landingStep ? "active" : ""} onClick={() => { setLandingStep(index); setLandingCycle((current) => current + 1); }}><span>{item.number}</span>{item.label}</button>)}</div></div>
+      <div className={`landing-upload guide-step-${landingStep}`}><LandingGuideVisual key={`${landingStep}-${landingCycle}`} step={landingStep} /><button onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "正在转换媒体..." : "选择文件"}<span>＋</span></button><strong>或把文件拖到这里</strong><small>支持单个 JSON / 视频 / 动图，也支持多选序列帧</small>{mediaConversionError && <em>{mediaConversionError}</em>}{isDraggingLanding && <div className="landing-drop-state">松开开始处理</div>}</div>
     </section> : <section className="editor-context"><div className="file-summary"><span className="eyebrow">NOW EDITING</span><strong>{fileName}</strong><small>{isLottie(data) ? "可播放 Lottie" : "JSON 视觉结构"} · {formatBytes(new Blob([jsonText]).size)} · {lastSavedAt ? "已自动保存" : "等待自动保存"}</small></div><div className="history-actions"><button onClick={undoEdit} disabled={versionIndex <= 0} title="撤销（⌘/Ctrl + Z）">撤销</button><button onClick={redoEdit} disabled={versionIndex < 0 || versionIndex >= versions.length - 1} title="重做（⌘/Ctrl + Shift + Z）">重做</button><button onClick={restoreOriginal} disabled={versionIndex === 0}>恢复原始</button><button className="history-button" onClick={openHistory}>修改记录 <b>{Math.max(0, versions.length - 1)}</b></button>{compressionResult && <button className="history-button optimization-report-button" onClick={() => setCompressionReportOpen(true)}>压缩结果 <b>2</b></button>}</div></section>}
     {error && <div className="error" role="alert">{error}</div>}
     {hasUploadedFile && <section className="workspace">
