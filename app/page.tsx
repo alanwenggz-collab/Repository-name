@@ -739,7 +739,7 @@ function SharedLandingCube({ step }: { step: number }) {
     if (lastStep === 2 && step === 0) {
       setScatterColors(initialScatterColors());
       setIsReturning(true);
-      returnTimer.current = window.setTimeout(() => setIsReturning(false), 1080);
+      returnTimer.current = window.setTimeout(() => setIsReturning(false), 920);
     } else {
       setIsReturning(false);
     }
