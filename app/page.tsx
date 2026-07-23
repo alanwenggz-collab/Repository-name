@@ -714,6 +714,12 @@ const LANDING_STEPS = [
   { number: "03", label: "修改元素" },
 ];
 
+function WorldCube() {
+  return <div className="world-cube" aria-hidden="true">
+    {CUBE_FACES.map((face) => <div className={`cube-face cube-face-${face}`} key={face}>{Array.from({ length: 9 }, (_, index) => <span key={index} />)}</div>)}
+  </div>;
+}
+
 function TwistCube() {
   const cubies = Array.from({ length: 27 }, (_, index) => {
     const x = index % 3 - 1;
@@ -721,7 +727,7 @@ function TwistCube() {
     const z = Math.floor(index / 9) - 1;
     return { x, y, z, key: `${x}:${y}:${z}`, tone: Math.abs(x * 7 + y * 5 + z * 3) % 4 };
   });
-  const renderCubie = ({ x, y, z, key, tone }: (typeof cubies)[number]) => <div key={key} className={`twist-cubie tone-${tone}`} style={{ "--tx": `${x * 38 - 17}px`, "--ty": `${y * 38 - 17}px`, "--tz": `${z * 38 - 17}px` } as CSSProperties}>
+  const renderCubie = ({ x, y, z, key, tone }: (typeof cubies)[number]) => <div key={key} className={`twist-cubie tone-${tone}`} style={{ "--tx": `${x * 38 - 17}px`, "--ty": `${y * 38 - 17}px`, "--tz": `${z * 38}px` } as CSSProperties}>
     <span className={z === 1 ? "cubie-face cubie-front painted" : "cubie-face cubie-front"} />
     <span className={z === -1 ? "cubie-face cubie-back painted" : "cubie-face cubie-back"} />
     <span className={x === 1 ? "cubie-face cubie-right painted" : "cubie-face cubie-right"} />
@@ -737,14 +743,15 @@ function TwistCube() {
 
 function LandingGuideVisual({ step }: { step: number }) {
   if (step === 1) return <div className="landing-guide-visual circuit-visual" role="img" aria-label="魔方落入接口并激活电路地面">
-    <div className="circuit-floor" aria-hidden="true">
-      <span className="circuit-hole" />
-      {Array.from({ length: 8 }, (_, index) => <i key={index} />)}
-      {Array.from({ length: 7 }, (_, index) => <b key={index} />)}
+    <div className="ortho-world" aria-hidden="true">
+      <div className="world-cube-drop"><WorldCube /></div>
+      <div className="circuit-floor">
+        <span className="circuit-hole" />
+        {Array.from({ length: 8 }, (_, index) => <i key={index} />)}
+        {Array.from({ length: 7 }, (_, index) => <b key={index} />)}
+        <em className="ground-activation" />
+      </div>
     </div>
-    <div className="cube-seat"><MagicCube compact orthographic /></div>
-    <div className="underground-depth" aria-hidden="true"><span /><span /><span /></div>
-    <div className="activation-wave" aria-hidden="true" />
     <span className="visual-status">STRUCTURE ONLINE</span>
   </div>;
 
