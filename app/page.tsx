@@ -487,6 +487,12 @@ function CubeLogo() {
   return <img className="brand-logo" src="/jsonable-logo-v2.png" alt="" aria-hidden="true" />;
 }
 
+function ActionIcon({ name }: { name: "upload" | "compress" | "download" }) {
+  if (name === "upload") return <svg className="action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14" /></svg>;
+  if (name === "compress") return <svg className="action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 3v5H3m13-5v5h5M8 21v-5H3m13 5v-5h5M8 8 4 4m12 4 4-4M8 16l-4 4m12-4 4 4" /></svg>;
+  return <svg className="action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v12m0 0 4.5-4.5M12 16l-4.5-4.5M5 20h14" /></svg>;
+}
+
 const CUBE_FACES = ["front", "back", "right", "left", "top", "bottom"];
 
 function MagicCube({ compact = false }: { compact?: boolean }) {
@@ -559,15 +565,11 @@ export default function Home() {
   const [mediaConversionError, setMediaConversionError] = useState("");
   const [isDraggingJson, setIsDraggingJson] = useState(false);
   const [isDraggingLanding, setIsDraggingLanding] = useState(false);
-  const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
   const replacementFileRef = useRef<HTMLInputElement>(null);
   const imageFileRef = useRef<HTMLInputElement>(null);
-  const mediaFileRef = useRef<HTMLInputElement>(null);
   const unifiedFileRef = useRef<HTMLInputElement>(null);
-  const fileMenuRef = useRef<HTMLDivElement>(null);
   const colors = useMemo(() => scanColors(data), [data]);
   const shapes = useMemo(() => scanShapes(data), [data]);
   const images = useMemo(() => scanImages(data), [data]);
@@ -599,13 +601,6 @@ export default function Home() {
     document.body.style.overflow = "hidden"; window.addEventListener("keydown", closeOnEscape);
     return () => { document.body.style.overflow = previousOverflow; window.removeEventListener("keydown", closeOnEscape); };
   }, [colorEditor, shapeEditorOpen, imageEditorOpen]);
-  useEffect(() => {
-    if (!fileMenuOpen) return;
-    const close = (event: MouseEvent) => { if (!fileMenuRef.current?.contains(event.target as Node)) setFileMenuOpen(false); };
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setFileMenuOpen(false); };
-    document.addEventListener("pointerdown", close); window.addEventListener("keydown", escape);
-    return () => { document.removeEventListener("pointerdown", close); window.removeEventListener("keydown", escape); };
-  }, [fileMenuOpen]);
   const activeShape = shapes.find((item) => `${item.mode}:${item.name}` === selectedShape) || shapes[0];
   const activeImage = images.find((item) => item.id === selectedImage) || images[0];
   const tabMeta = activeTab === "colors"
@@ -616,15 +611,10 @@ export default function Home() {
 
   const loadJsonFile = async (file: File) => {
     try {
-      const parsed = JSON.parse(await file.text()); setData(parsed); setHasUploadedFile(true); setFileName(file.name); setError(""); setSelectedShape(""); setSelectedImage(""); setUploadedSvg(null); setUploadedImage(null); setShapeEditorOpen(false); setImageEditorOpen(false); setInspectorTab("preview");
+      const parsed = JSON.parse(await file.text()); setData(parsed); setHasUploadedFile(true); setFileName(file.name); setError(""); setMediaConversion(null); setMediaConversionError(""); setSelectedShape(""); setSelectedImage(""); setUploadedSvg(null); setUploadedImage(null); setShapeEditorOpen(false); setImageEditorOpen(false); setInspectorTab("preview");
       const foundColors = scanColors(parsed).length; const foundShapes = scanShapes(parsed).length; const foundImages = scanImages(parsed).length;
       setToast(`识别完成：${foundColors} 种颜色，${foundShapes} 种形状，${foundImages} 个图片资源`);
     } catch { setError("无法解析这个文件，请检查 JSON 格式后重试。"); }
-  };
-  const loadFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]; if (!file) return;
-    await loadJsonFile(file);
-    event.target.value = "";
   };
   const dropJson = async (event: ReactDragEvent<HTMLDivElement>) => {
     event.preventDefault(); setIsDraggingJson(false); const file = event.dataTransfer.files?.[0]; if (!file) return;
@@ -649,9 +639,6 @@ export default function Home() {
       setToast(`转换完成：已生成 ${frames.length} 帧可播放 Lottie JSON`);
     } catch { setMediaConversionError("转换失败：请确认浏览器支持该媒体编码，或缩短视频、减少序列帧后重试。"); }
     finally { setMediaConverting(false); }
-  };
-  const convertMediaFiles = async (event: ChangeEvent<HTMLInputElement>) => {
-    const selected = [...(event.target.files || [])]; event.target.value = ""; await convertMediaList(selected);
   };
   const unifiedUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const selected = [...(event.target.files || [])]; event.target.value = ""; if (!selected.length) return;
@@ -712,31 +699,15 @@ export default function Home() {
     const blob = new Blob([compressionResult.text], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a");
     a.href = url; a.download = fileName.replace(/\.json$/i, "") + "-compressed.json"; a.click(); URL.revokeObjectURL(url); setToast("压缩后的 JSON 已下载");
   };
-  const downloadMediaJson = () => {
-    if (!mediaConversion) return;
-    const blob = new Blob([mediaConversion.text], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a");
-    a.href = url; a.download = mediaConversion.outputName; a.click(); URL.revokeObjectURL(url); setToast("转换后的媒体 JSON 已下载");
-  };
-
   return <main>
     <header className="topbar">
       <a className="brand" href="#" aria-label="Jsonable 首页"><CubeLogo /><span>Jsonable</span></a>
-      <div className="top-actions"><span className="privacy"><span className="lock">◆</span>文件仅在本地处理</span>
-        <div className="file-menu" ref={fileMenuRef}>
-          <button className={fileMenuOpen ? "button button-ghost active" : "button button-ghost"} onClick={() => setFileMenuOpen((open) => !open)} aria-expanded={fileMenuOpen}>文件与处理 <span>⌄</span></button>
-          {fileMenuOpen && <div className="file-menu-popover">
-            <button onClick={() => { setFileMenuOpen(false); fileRef.current?.click(); }}><span>01</span><strong>上传 JSON</strong><small>打开可编辑动画文件</small></button>
-            <button onClick={() => { setFileMenuOpen(false); mediaFileRef.current?.click(); }}><span>02</span><strong>上传非 JSON</strong><small>MP4、GIF、APNG、序列帧</small></button>
-            <button disabled={!hasUploadedFile || compressionCountdown !== null} onClick={() => { setCompressionResult(null); setCompressionCountdown(3); }}><span>03</span><strong>{compressionCountdown !== null ? `正在压缩 ${compressionCountdown}` : "压缩当前 JSON"}</strong><small>{compressionResult ? `减少 ${compressionResult.percentage.toFixed(1)}% · ${formatBytes(compressionResult.compressedSize)}` : "移除缩进与换行"}</small></button>
-            {compressionResult && <button onClick={downloadCompressed}><span>↓</span><strong>下载压缩文件</strong><small>{formatBytes(compressionResult.compressedSize)}</small></button>}
-            {mediaConversion && <button onClick={downloadMediaJson}><span>↓</span><strong>下载转换文件</strong><small>{mediaConversion.fileCount} 帧 Lottie JSON</small></button>}
-          </div>}
-        </div>
-        <button className="button button-dark" onClick={download} disabled={!hasUploadedFile}>下载 JSON <span>↓</span></button>
+      <div className="top-actions"><span className="privacy"><span className="privacy-dot" />文件仅在本地处理</span>
+        <button className="button button-ghost action-button" onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}><ActionIcon name="upload" /><span>{mediaConverting ? "正在转换" : hasUploadedFile ? "更换文件" : "上传文件"}</span></button>
+        <button className={compressionResult ? "button button-ghost action-button has-result" : "button button-ghost action-button"} disabled={!hasUploadedFile || compressionCountdown !== null} title={!hasUploadedFile ? "上传 JSON 后可使用压缩功能" : undefined} onClick={() => { if (compressionResult) downloadCompressed(); else { setCompressionResult(null); setCompressionCountdown(3); } }}><ActionIcon name={compressionResult ? "download" : "compress"} /><span>{compressionCountdown !== null ? `压缩中 ${compressionCountdown}` : compressionResult ? `下载压缩版 · -${compressionResult.percentage.toFixed(1)}%` : "压缩 JSON"}</span></button>
+        <button className="button button-dark action-button" onClick={download} disabled={!hasUploadedFile} title={!hasUploadedFile ? "上传文件后可下载 JSON" : undefined}><span>{mediaConversion ? "下载转换 JSON" : "下载 JSON"}</span><ActionIcon name="download" /></button>
       </div>
     </header>
-    <input ref={fileRef} type="file" accept="application/json,.json" onChange={loadFile} hidden />
-    <input ref={mediaFileRef} type="file" accept="video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={convertMediaFiles} hidden />
     <input ref={unifiedFileRef} type="file" accept="application/json,.json,video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={unifiedUpload} hidden />
     {!hasUploadedFile ? <section className={isDraggingLanding ? "landing-hero is-dragging" : "landing-hero"} onDragEnter={(event) => { event.preventDefault(); setIsDraggingLanding(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDraggingLanding(false); }} onDrop={dropUnified}>
       <div className="landing-copy"><span className="eyebrow">VISUAL JSON EDITOR</span><h1>先把文件放进来，<br /><em>再把每一层看清。</em></h1><p>JSON、MP4、GIF、APNG 与序列帧都可以。媒体文件会先转换成可播放、可编辑的 Lottie JSON。</p><div className="landing-steps"><span>01 上传</span><span>02 预览与代码</span><span>03 修改元素</span></div></div>
