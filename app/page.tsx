@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, DragEvent as ReactDragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent as ReactDragEvent, type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import type { AnimationItem } from "lottie-web";
 
 type ShapeName = "circle" | "square" | "triangle" | "star" | "heart" | "hexagon" | "path";
@@ -465,18 +465,47 @@ function ShapeThumb({ data, shape }: { data: unknown; shape: ShapeInfo }) {
 
 function LottiePreview({ data }: { data: Record<string, unknown> }) {
   const ref = useRef<HTMLDivElement>(null);
+  const animationRef = useRef<AnimationItem | null>(null);
+  const totalFramesRef = useRef(1);
+  const lastProgressUpdate = useRef(0);
   const [failed, setFailed] = useState(false);
+  const [playing, setPlaying] = useState(true);
+  const [progress, setProgress] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   useEffect(() => {
     let animation: AnimationItem | undefined; let active = true;
+    setFailed(false); setPlaying(true); setProgress(0); setCurrentTime(0); setDuration(0);
     import("lottie-web/build/player/lottie_light").then(({ default: lottie }) => {
       if (!active || !ref.current) return;
       ref.current.innerHTML = "";
       animation = lottie.loadAnimation({ container: ref.current, renderer: "svg", loop: true, autoplay: true, animationData: JSON.parse(JSON.stringify(data)) });
+      animationRef.current = animation;
+      animation.addEventListener?.("DOMLoaded", () => {
+        const totalFrames = Math.max(1, animation?.getDuration(true) || 1); const totalSeconds = Math.max(0, animation?.getDuration(false) || 0);
+        totalFramesRef.current = totalFrames; setDuration(totalSeconds);
+      });
+      animation.addEventListener?.("enterFrame", () => {
+        const now = performance.now(); if (now - lastProgressUpdate.current < 50 || !animation) return;
+        lastProgressUpdate.current = now;
+        const nextProgress = Math.max(0, Math.min(1, animation.currentFrame / totalFramesRef.current));
+        setProgress(nextProgress); setCurrentTime(nextProgress * (animation.getDuration(false) || 0));
+      });
       animation.addEventListener?.("data_failed", () => setFailed(true));
     }).catch(() => setFailed(true));
-    return () => { active = false; animation?.destroy(); };
+    return () => { active = false; animationRef.current = null; animation?.destroy(); };
   }, [data]);
-  return failed ? <div className="preview-message">动画结构无法直接渲染，已显示识别到的视觉元素。</div> : <div ref={ref} className="lottie-stage" />;
+  const togglePlayback = () => {
+    const animation = animationRef.current; if (!animation) return;
+    if (playing) animation.pause(); else animation.play();
+    setPlaying(!playing);
+  };
+  const seek = (value: number) => {
+    const nextProgress = Math.max(0, Math.min(1, value)); const animation = animationRef.current; if (!animation) return;
+    animation.goToAndStop(nextProgress * totalFramesRef.current, true); setPlaying(false); setProgress(nextProgress); setCurrentTime(nextProgress * duration);
+  };
+  const timeLabel = (seconds: number) => `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
+  return failed ? <div className="preview-message">动画结构无法直接渲染，已显示识别到的视觉元素。</div> : <div className="lottie-player"><div ref={ref} className="lottie-stage" /><div className="playback-controls"><button type="button" onClick={togglePlayback} aria-label={playing ? "暂停预览" : "播放预览"}><span aria-hidden="true">{playing ? "Ⅱ" : "▶"}</span></button><span className="playback-time">{timeLabel(currentTime)}</span><input type="range" min="0" max="1000" step="1" value={Math.round(progress * 1000)} onChange={(event) => seek(Number(event.target.value) / 1000)} aria-label="动画播放进度" style={{ "--playback-progress": `${progress * 100}%` } as CSSProperties} /><span className="playback-time">{timeLabel(duration)}</span></div></div>;
 }
 
 function ImageThumb({ source, label }: { source: string; label: string }) {
@@ -699,9 +728,13 @@ export default function Home() {
     const blob = new Blob([compressionResult.text], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a");
     a.href = url; a.download = fileName.replace(/\.json$/i, "") + "-compressed.json"; a.click(); URL.revokeObjectURL(url); setToast("压缩后的 JSON 已下载");
   };
+  const goHome = () => {
+    setData(SAMPLE); setHasUploadedFile(false); setFileName("summer-campaign.json"); setActiveTab("colors"); setInspectorTab("preview"); setSelectedShape(""); setSelectedImage(""); setUploadedSvg(null); setUploadedImage(null); setColorEditor(null); setShapeEditorOpen(false); setImageEditorOpen(false); setCompressionCountdown(null); setCompressionResult(null); setMediaConversion(null); setMediaConversionError(""); setError("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   return <main>
     <header className="topbar">
-      <a className="brand" href="#" aria-label="Jsonable 首页"><CubeLogo /><span>Jsonable</span></a>
+      <button className="brand" type="button" onClick={goHome} aria-label="返回 Jsonable 首页"><CubeLogo /><span>Jsonable</span></button>
       <div className="top-actions"><span className="privacy"><span className="privacy-dot" />文件仅在本地处理</span>
         <button className="button button-ghost action-button" onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}><ActionIcon name="upload" /><span>{mediaConverting ? "正在转换" : hasUploadedFile ? "更换文件" : "上传文件"}</span></button>
         <button className={compressionResult ? "button button-ghost action-button has-result" : "button button-ghost action-button"} disabled={!hasUploadedFile || compressionCountdown !== null} title={!hasUploadedFile ? "上传 JSON 后可使用压缩功能" : undefined} onClick={() => { if (compressionResult) downloadCompressed(); else { setCompressionResult(null); setCompressionCountdown(3); } }}><ActionIcon name={compressionResult ? "download" : "compress"} /><span>{compressionCountdown !== null ? `压缩中 ${compressionCountdown}` : compressionResult ? `下载压缩版 · -${compressionResult.percentage.toFixed(1)}%` : "压缩 JSON"}</span></button>
