@@ -689,38 +689,29 @@ function MagicCube({ compact = false, orthographic = false }: { compact?: boolea
   </div>;
 }
 
-function CircuitWorldCube() {
-  return <div className="circuit-world" aria-hidden="true">
-    <div className="circuit-world-axis">
-      <div className="circuit-floor">
-        <span className="circuit-hole" />
-        {Array.from({ length: 8 }, (_, index) => <i key={index} />)}
-        {Array.from({ length: 7 }, (_, index) => <b key={index} />)}
-        <em className="ground-activation" />
-      </div>
-      <div className="world-cube-drop">
-        <div className="world-magic-cube">
-          {CUBE_FACES.map((face) => <div className={`cube-face cube-face-${face}`} key={face}>{Array.from({ length: 9 }, (_, index) => <span key={index} />)}</div>)}
-        </div>
-      </div>
-    </div>
-  </div>;
-}
-
 const LANDING_STEPS = [
   { number: "01", label: "上传" },
   { number: "02", label: "预览与代码" },
   { number: "03", label: "修改元素" },
 ];
 
-function TwistCube() {
-  const cubies = Array.from({ length: 27 }, (_, index) => {
-    const x = index % 3 - 1;
-    const y = Math.floor(index / 3) % 3 - 1;
-    const z = Math.floor(index / 9) - 1;
-    return { x, y, z, key: `${x}:${y}:${z}`, tone: Math.abs(x * 7 + y * 5 + z * 3) % 4 };
-  });
-  const renderCubie = ({ x, y, z, key, tone }: (typeof cubies)[number]) => <div key={key} className={`twist-cubie tone-${tone}`} style={{ "--tx": `${x * 38 - 17}px`, "--ty": `${y * 38 - 17}px`, "--tz": `${z * 38}px` } as CSSProperties}>
+const LANDING_CUBIES = Array.from({ length: 27 }, (_, index) => {
+  const x = index % 3 - 1;
+  const y = Math.floor(index / 3) % 3 - 1;
+  const z = Math.floor(index / 9) - 1;
+  return { x, y, z, key: `${x}:${y}:${z}`, tone: Math.abs(x * 7 + y * 5 + z * 3) % 4 };
+});
+
+const SCATTER_POSITIONS = [
+  [-104, -66, 8], [-4, -86, 34], [98, -62, 2],
+  [-118, 4, 26], [0, -2, 54], [112, 10, 18],
+  [-92, 78, 4], [4, 86, 30], [100, 72, 10],
+] as const;
+
+const SCATTER_PALETTE = ["#48c5a1", "#79e1c2", "#dfe9e5", "#268f72", "#62a7d8", "#d887b5", "#e08b67"];
+
+function LandingCubie({ x, y, z, tone }: (typeof LANDING_CUBIES)[number]) {
+  return <div className={`twist-cubie tone-${tone}`} style={{ "--tx": `${x * 38 - 17}px`, "--ty": `${y * 38 - 17}px`, "--tz": `${z * 38}px` } as CSSProperties}>
     <span className={z === 1 ? "cubie-face cubie-front painted" : "cubie-face cubie-front"} />
     <span className={z === -1 ? "cubie-face cubie-back painted" : "cubie-face cubie-back"} />
     <span className={x === 1 ? "cubie-face cubie-right painted" : "cubie-face cubie-right"} />
@@ -728,31 +719,62 @@ function TwistCube() {
     <span className={y === -1 ? "cubie-face cubie-top painted" : "cubie-face cubie-top"} />
     <span className={y === 1 ? "cubie-face cubie-bottom painted" : "cubie-face cubie-bottom"} />
   </div>;
-  return <div className="real-cube-rig" aria-hidden="true">
-    <div className="cube-model cube-model-horizontal">
-      <div className="cube-fixed-layers">{cubies.filter((cubie) => cubie.y !== -1).map(renderCubie)}</div>
-      <div className="cube-turning-layer horizontal-layer">{cubies.filter((cubie) => cubie.y === -1).map(renderCubie)}</div>
+}
+
+function SharedLandingCube({ step }: { step: number }) {
+  const [scatterColors, setScatterColors] = useState(() => SCATTER_POSITIONS.map((_, index) => SCATTER_PALETTE[index % 4]));
+  const randomizeScatterColor = (index: number) => {
+    setScatterColors((current) => current.map((color, colorIndex) => {
+      if (colorIndex !== index) return color;
+      const choices = SCATTER_PALETTE.filter((candidate) => candidate !== color);
+      return choices[Math.floor(Math.random() * choices.length)];
+    }));
+  };
+  return <div className={`landing-cube-sequence sequence-step-${step}`}>
+    <div className="sequence-rig" aria-hidden="true">
+      <div className="sequence-model sequence-model-static">
+        {LANDING_CUBIES.map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}
+      </div>
+      <div className="sequence-model sequence-model-twist">
+        <div className="cube-model cube-model-horizontal">
+          <div className="cube-fixed-layers">{LANDING_CUBIES.filter((cubie) => cubie.y !== -1).map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}</div>
+          <div className="cube-turning-layer horizontal-layer">{LANDING_CUBIES.filter((cubie) => cubie.y === -1).map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}</div>
+        </div>
+        <div className="cube-model cube-model-vertical">
+          <div className="cube-fixed-layers">{LANDING_CUBIES.filter((cubie) => cubie.x !== 1).map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}</div>
+          <div className="cube-turning-layer vertical-layer">{LANDING_CUBIES.filter((cubie) => cubie.x === 1).map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}</div>
+        </div>
+      </div>
     </div>
-    <div className="cube-model cube-model-vertical">
-      <div className="cube-fixed-layers">{cubies.filter((cubie) => cubie.x !== 1).map(renderCubie)}</div>
-      <div className="cube-turning-layer vertical-layer">{cubies.filter((cubie) => cubie.x === 1).map(renderCubie)}</div>
+    <div className="scatter-field" role="group" aria-label="九个可点击改色的漂浮立方体">
+      {SCATTER_POSITIONS.map(([x, y, z], index) => <button
+        key={index}
+        type="button"
+        className="scatter-cube"
+        aria-label={`改变第 ${index + 1} 个立方体颜色`}
+        tabIndex={step === 2 ? 0 : -1}
+        onClick={() => randomizeScatterColor(index)}
+        style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px`, "--scatter-z": `${z}px`, "--scatter-color": scatterColors[index], "--scatter-delay": `${index * 55}ms` } as CSSProperties}
+      >
+        <span className="scatter-face scatter-front" />
+        <span className="scatter-face scatter-back" />
+        <span className="scatter-face scatter-right" />
+        <span className="scatter-face scatter-left" />
+        <span className="scatter-face scatter-top" />
+        <span className="scatter-face scatter-bottom" />
+      </button>)}
     </div>
   </div>;
 }
 
 function LandingGuideVisual({ step }: { step: number }) {
-  if (step === 1) return <div className="landing-guide-visual circuit-visual" role="img" aria-label="魔方与电路地面处于同一三维空间，落入接口后向外激活线路">
-    <CircuitWorldCube />
-    <span className="visual-status">STRUCTURE ONLINE</span>
-  </div>;
-
-  if (step === 2) return <div className="landing-guide-visual twist-visual" role="img" aria-label="魔方以参考图的顶部、正面和右侧面视角，依次转动顶部层和右侧层">
-    <TwistCube />
-  </div>;
-
-  return <div className="landing-guide-visual upload-visual" role="img" aria-label="等待上传文件的 Jsonable 魔方">
-    <MagicCube compact />
-    <span className="visual-status">READY FOR INPUT</span>
+  const labels = [
+    "完整的 Jsonable 魔方等待上传",
+    "同一个魔方依次横向和纵向拧动",
+    "魔方自然散开为九个可点击改色的漂浮立方体",
+  ];
+  return <div className="landing-guide-visual sequence-visual" role="group" aria-label={labels[step]}>
+    <SharedLandingCube step={step} />
   </div>;
 }
 
@@ -1025,7 +1047,7 @@ export default function Home() {
     <input ref={unifiedFileRef} type="file" accept="application/json,.json,video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={unifiedUpload} hidden />
     {!hasUploadedFile ? <section className={isDraggingLanding ? "landing-hero is-dragging" : "landing-hero"} onDragEnter={(event) => { event.preventDefault(); setIsDraggingLanding(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDraggingLanding(false); }} onDrop={dropUnified}>
       <div className="landing-copy"><span className="eyebrow">VISUAL JSON EDITOR</span><h1>预览 JSON，<br /><em>编辑 Lottie。</em></h1><p>JSON、MP4、GIF、APNG 与序列帧都可以。媒体文件会先转换成可播放、可编辑的 Lottie JSON。</p><div className="landing-steps" role="tablist" aria-label="Jsonable 使用流程">{LANDING_STEPS.map((item, index) => <button key={`${item.number}-${index === landingStep ? landingCycle : "idle"}`} type="button" role="tab" aria-selected={index === landingStep} className={index === landingStep ? "active" : ""} onClick={() => { setLandingStep(index); setLandingCycle((current) => current + 1); }}><span>{item.number}</span>{item.label}</button>)}</div></div>
-      <div className={`landing-upload guide-step-${landingStep}`}><LandingGuideVisual key={`${landingStep}-${landingCycle}`} step={landingStep} /><button onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "正在转换媒体..." : "选择文件"}<span>＋</span></button><strong>或把文件拖到这里</strong><small>支持单个 JSON / 视频 / 动图，也支持多选序列帧</small>{mediaConversionError && <em>{mediaConversionError}</em>}{isDraggingLanding && <div className="landing-drop-state">松开开始处理</div>}</div>
+      <div className={`landing-upload guide-step-${landingStep}`}><LandingGuideVisual step={landingStep} /><button onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "正在转换媒体..." : "选择文件"}<span>＋</span></button><strong>或把文件拖到这里</strong><small>支持单个 JSON / 视频 / 动图，也支持多选序列帧</small>{mediaConversionError && <em>{mediaConversionError}</em>}{isDraggingLanding && <div className="landing-drop-state">松开开始处理</div>}</div>
     </section> : <section className="editor-context"><div className="file-summary"><span className="eyebrow">NOW EDITING</span><strong>{fileName}</strong><small>{isLottie(data) ? "可播放 Lottie" : "JSON 视觉结构"} · {formatBytes(new Blob([jsonText]).size)} · 仅保留在当前会话</small></div><div className="history-actions"><button onClick={undoEdit} disabled={versionIndex <= 0} title="撤销（⌘/Ctrl + Z）">撤销</button><button onClick={redoEdit} disabled={versionIndex < 0 || versionIndex >= versions.length - 1} title="重做（⌘/Ctrl + Shift + Z）">重做</button><button onClick={restoreOriginal} disabled={versionIndex === 0}>恢复原始</button><button className="history-button" onClick={openHistory}>修改记录 <b>{Math.max(0, versions.length - 1)}</b></button>{compressionResult && <button className="history-button optimization-report-button" onClick={() => setCompressionReportOpen(true)}>压缩结果 <b>2</b></button>}</div></section>}
     {error && <div className="error" role="alert">{error}</div>}
     {hasUploadedFile && <section className="workspace">
