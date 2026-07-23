@@ -80,10 +80,10 @@ button.brand { border:0; background:transparent; padding:0; cursor:pointer; }
 .twist-cubie.tone-3 { --sticker:#268f72; }
 .scatter-field { position:absolute; inset:0; z-index:4; perspective:780px; transform-style:preserve-3d; pointer-events:none; }
 .sequence-step-2 .cubie-face { opacity:0; transition-delay:0ms; }
-.scatter-cube { --scatter-size:44px; width:var(--scatter-size); height:var(--scatter-size); position:absolute; left:50%; top:50%; margin:calc(var(--scatter-size) / -2); padding:0; border:0; background:transparent; color:inherit; cursor:pointer; opacity:0; pointer-events:none; transform:translate3d(var(--scatter-x),var(--scatter-y),var(--scatter-z)) rotateX(var(--scatter-rx)) rotateY(var(--scatter-ry)) scale(.98); transform-style:preserve-3d; transition:transform .34s cubic-bezier(.16,1,.3,1),opacity .28s ease; transition-delay:var(--scatter-delay); }
-.sequence-step-2 .scatter-cube { opacity:1; pointer-events:auto; transform:translate3d(var(--scatter-x),var(--scatter-y),var(--scatter-z)) rotateX(var(--scatter-rx)) rotateY(var(--scatter-ry)) scale(1); animation:scatter-float 3.2s calc(.92s + var(--scatter-delay)) ease-in-out infinite; }
+.scatter-cube { --scatter-size:44px; width:var(--scatter-size); height:var(--scatter-size); position:absolute; left:50%; top:50%; margin:calc(var(--scatter-size) / -2); padding:0; border:0; background:transparent; color:inherit; cursor:pointer; opacity:0; pointer-events:none; transform:translate3d(var(--scatter-x),var(--scatter-y),var(--scatter-z)) rotateX(var(--scatter-rx)) rotateY(var(--scatter-ry)) scale(.78); transform-style:preserve-3d; transition:transform .34s cubic-bezier(.16,1,.3,1),opacity .28s ease; transition-delay:var(--scatter-delay); }
+.sequence-step-2 .scatter-cube { opacity:1; pointer-events:auto; transform:translate3d(var(--scatter-x),var(--scatter-y),var(--scatter-z)) rotateX(var(--scatter-rx)) rotateY(var(--scatter-ry)) scale(.8); animation:scatter-float 3.2s calc(.92s + var(--scatter-delay)) ease-in-out infinite; }
 .sequence-returning .cubie-face { opacity:1; transition-delay:.28s; }
-.sequence-returning .scatter-cube { opacity:0; pointer-events:none; transform:translate3d(var(--scatter-x),var(--scatter-y),var(--scatter-z)) rotateX(var(--scatter-rx)) rotateY(var(--scatter-ry)) scale(.98); animation:none; transition:opacity .34s ease,transform .34s cubic-bezier(.16,1,.3,1); transition-delay:0ms; }
+.sequence-returning .scatter-cube { opacity:0; pointer-events:none; transform:translate3d(var(--scatter-x),var(--scatter-y),var(--scatter-z)) rotateX(var(--scatter-rx)) rotateY(var(--scatter-ry)) scale(.78); animation:none; transition:opacity .34s ease,transform .34s cubic-bezier(.16,1,.3,1); transition-delay:0ms; }
 .twist-hint { position:absolute; left:50%; bottom:8px; z-index:6; transform:translateX(-50%); color:var(--muted); font:10px var(--font-din),"PingFang SC",sans-serif; letter-spacing:.4px; white-space:nowrap; pointer-events:none; }
 .scatter-cube:hover .scatter-face { box-shadow:inset 0 0 0 2px rgba(232,240,237,.2),0 0 0 1px rgba(72,197,161,.22); }
 .scatter-cube:active .scatter-face { border-color:#d8fff3; }
@@ -107,8 +107,8 @@ button.brand { border:0; background:transparent; padding:0; cursor:pointer; }
 @keyframes horizontal-layer-turn { 0%,18%{transform:rotateY(0)} 32%,38%{transform:rotateY(90deg)} 46%,100%{transform:rotateY(0)} }
 @keyframes vertical-layer-turn { 0%,53%{transform:rotateX(0)} 67%,78%{transform:rotateX(90deg)} 92%,100%{transform:rotateX(0)} }
 @keyframes scatter-float {
-  0%,100% { transform:translate3d(var(--scatter-x),var(--scatter-y),var(--scatter-z)) rotateX(var(--scatter-rx)) rotateY(var(--scatter-ry)) scale(1); }
-  50% { transform:translate3d(var(--scatter-x),calc(var(--scatter-y) - 8px),var(--scatter-z)) rotateX(calc(var(--scatter-rx) - 3deg)) rotateY(calc(var(--scatter-ry) + 5deg)) scale(1); }
+  0%,100% { transform:translate3d(var(--scatter-x),var(--scatter-y),var(--scatter-z)) rotateX(var(--scatter-rx)) rotateY(var(--scatter-ry)) scale(.8); }
+  50% { transform:translate3d(var(--scatter-x),calc(var(--scatter-y) - 8px),var(--scatter-z)) rotateX(calc(var(--scatter-rx) - 3deg)) rotateY(calc(var(--scatter-ry) + 5deg)) scale(.8); }
 }
 .landing-drop-state { position:absolute; inset:18px; border:2px dashed var(--accent); background:rgba(9,15,13,.9); display:grid; place-items:center; color:var(--accent); font-size:18px; font-weight:750; backdrop-filter:blur(8px); }
 .editor-context { min-height:104px; padding:20px 56px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); background:#0d1210; }
