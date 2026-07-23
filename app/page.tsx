@@ -689,6 +689,24 @@ function MagicCube({ compact = false, orthographic = false }: { compact?: boolea
   </div>;
 }
 
+function CircuitWorldCube() {
+  return <div className="circuit-world" aria-hidden="true">
+    <div className="circuit-world-axis">
+      <div className="circuit-floor">
+        <span className="circuit-hole" />
+        {Array.from({ length: 8 }, (_, index) => <i key={index} />)}
+        {Array.from({ length: 7 }, (_, index) => <b key={index} />)}
+        <em className="ground-activation" />
+      </div>
+      <div className="world-cube-drop">
+        <div className="world-magic-cube">
+          {CUBE_FACES.map((face) => <div className={`cube-face cube-face-${face}`} key={face}>{Array.from({ length: 9 }, (_, index) => <span key={index} />)}</div>)}
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
 const LANDING_STEPS = [
   { number: "01", label: "上传" },
   { number: "02", label: "预览与代码" },
@@ -723,23 +741,13 @@ function TwistCube() {
 }
 
 function LandingGuideVisual({ step }: { step: number }) {
-  if (step === 1) return <div className="landing-guide-visual circuit-visual" role="img" aria-label="魔方落入接口并激活电路地面">
-    <div className="circuit-floor" aria-hidden="true">
-      <span className="circuit-hole" />
-      {Array.from({ length: 8 }, (_, index) => <i key={index} />)}
-      {Array.from({ length: 7 }, (_, index) => <b key={index} />)}
-      <em className="ground-activation" />
-    </div>
-    <div className="cube-seat"><MagicCube compact orthographic /></div>
+  if (step === 1) return <div className="landing-guide-visual circuit-visual" role="img" aria-label="魔方与电路地面处于同一三维空间，落入接口后向外激活线路">
+    <CircuitWorldCube />
     <span className="visual-status">STRUCTURE ONLINE</span>
   </div>;
 
-  if (step === 2) return <div className="landing-guide-visual twist-visual" role="img" aria-label="魔方以和上传场景一致的视角从接口升起，再转动顶部层和右侧层">
-    <div className="twist-launchpad" aria-hidden="true"><span /></div>
+  if (step === 2) return <div className="landing-guide-visual twist-visual" role="img" aria-label="魔方以参考图的顶部、正面和右侧面视角，依次转动顶部层和右侧层">
     <TwistCube />
-    <div className="turn-axis axis-row" aria-hidden="true"><span /><span /></div>
-    <div className="turn-axis axis-column" aria-hidden="true"><span /><span /></div>
-    <span className="visual-status">LAYERS IN MOTION</span>
   </div>;
 
   return <div className="landing-guide-visual upload-visual" role="img" aria-label="等待上传文件的 Jsonable 魔方">
