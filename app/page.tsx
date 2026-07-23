@@ -703,9 +703,9 @@ const LANDING_CUBIES = Array.from({ length: 27 }, (_, index) => {
 });
 
 const SCATTER_POSITIONS = [
-  [-96, -62, 8], [0, -72, 34], [96, -58, 2],
-  [-108, 0, 26], [0, 0, 54], [108, 2, 18],
-  [-92, 64, 4], [2, 72, 30], [96, 62, 10],
+  [-132, -78, 8, -26, 18], [-24, -108, 40, -16, 34], [118, -72, 0, -28, 42],
+  [-154, -2, 24, -18, 38], [2, -8, 62, -24, 26], [150, 10, 18, -14, 32],
+  [-112, 84, 2, -30, 22], [18, 104, 34, -17, 44], [128, 76, 10, -27, 30],
 ] as const;
 
 const SCATTER_PALETTE = ["#48c5a1", "#79e1c2", "#dfe9e5", "#268f72", "#62a7d8", "#d887b5", "#e08b67"];
@@ -880,14 +880,14 @@ function SharedLandingCube({ step }: { step: number }) {
       </div>
     </div>
     <div className="scatter-field" role="group" aria-label="九个可点击改色的漂浮立方体">
-      {SCATTER_POSITIONS.map(([x, y, z], index) => <button
+      {SCATTER_POSITIONS.map(([x, y, z, rotateX, rotateY], index) => <button
         key={index}
         type="button"
         className="scatter-cube"
         aria-label={`改变第 ${index + 1} 个立方体颜色`}
         tabIndex={step === 2 ? 0 : -1}
         onClick={() => randomizeScatterColor(index)}
-        style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px`, "--scatter-z": `${z}px`, "--scatter-color": scatterColors[index], "--scatter-delay": `${index * 55}ms` } as CSSProperties}
+        style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px`, "--scatter-z": `${z}px`, "--scatter-rx": `${rotateX}deg`, "--scatter-ry": `${rotateY}deg`, "--scatter-color": scatterColors[index], "--scatter-delay": `${index * 55}ms` } as CSSProperties}
       >
         <span className="scatter-face scatter-front" />
         <span className="scatter-face scatter-back" />
