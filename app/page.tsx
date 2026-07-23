@@ -703,12 +703,13 @@ const LANDING_CUBIES = Array.from({ length: 27 }, (_, index) => {
 });
 
 const SCATTER_POSITIONS = [
-  [-104, -66, 8], [-4, -86, 34], [98, -62, 2],
-  [-118, 4, 26], [0, -2, 54], [112, 10, 18],
-  [-92, 78, 4], [4, 86, 30], [100, 72, 10],
+  [-96, -62, 8], [0, -72, 34], [96, -58, 2],
+  [-108, 0, 26], [0, 0, 54], [108, 2, 18],
+  [-92, 64, 4], [2, 72, 30], [96, 62, 10],
 ] as const;
 
 const SCATTER_PALETTE = ["#48c5a1", "#79e1c2", "#dfe9e5", "#268f72", "#62a7d8", "#d887b5", "#e08b67"];
+const initialScatterColors = () => SCATTER_POSITIONS.map((_, index) => SCATTER_PALETTE[index % 4]);
 
 function LandingCubie({ x, y, z, tone }: (typeof LANDING_CUBIES)[number]) {
   return <div className={`twist-cubie tone-${tone}`} style={{ "--tx": `${x * 38 - 17}px`, "--ty": `${y * 38 - 17}px`, "--tz": `${z * 38}px` } as CSSProperties}>
@@ -722,9 +723,33 @@ function LandingCubie({ x, y, z, tone }: (typeof LANDING_CUBIES)[number]) {
 }
 
 function SharedLandingCube({ step }: { step: number }) {
+  const sequenceRef = useRef<HTMLDivElement>(null);
   const rigRef = useRef<HTMLDivElement>(null);
   const pointerMotion = useRef({ x: -22, y: 28, targetX: -22, targetY: 28, interacted: false, lastTime: 0 });
-  const [scatterColors, setScatterColors] = useState(() => SCATTER_POSITIONS.map((_, index) => SCATTER_PALETTE[index % 4]));
+  const twistGesture = useRef<{ active: boolean; pointerId: number; startX: number; startY: number; axis: "horizontal" | "vertical" | null; angle: number }>({ active: false, pointerId: -1, startX: 0, startY: 0, axis: null, angle: 0 });
+  const twistTimer = useRef<number | null>(null);
+  const previousStep = useRef(step);
+  const returnTimer = useRef<number | null>(null);
+  const [isReturning, setIsReturning] = useState(false);
+  const [scatterColors, setScatterColors] = useState(initialScatterColors);
+  useEffect(() => {
+    const lastStep = previousStep.current;
+    previousStep.current = step;
+    if (returnTimer.current !== null) window.clearTimeout(returnTimer.current);
+    if (lastStep === 2 && step === 0) {
+      setScatterColors(initialScatterColors());
+      setIsReturning(true);
+      returnTimer.current = window.setTimeout(() => setIsReturning(false), 1080);
+    } else {
+      setIsReturning(false);
+    }
+    return () => {
+      if (returnTimer.current !== null) window.clearTimeout(returnTimer.current);
+    };
+  }, [step]);
+  useEffect(() => () => {
+    if (twistTimer.current !== null) window.clearTimeout(twistTimer.current);
+  }, []);
   useEffect(() => {
     pointerMotion.current.interacted = false;
     pointerMotion.current.targetX = -22;
@@ -761,6 +786,71 @@ function SharedLandingCube({ step }: { step: number }) {
     pointerMotion.current.targetX = -18 - ny * 24;
     pointerMotion.current.targetY = 28 + nx * 62;
   };
+  const clearManualTwist = () => {
+    const root = sequenceRef.current;
+    if (!root) return;
+    root.classList.remove("is-manual-twist", "is-settling-twist");
+    root.querySelectorAll<HTMLElement>(".cube-model").forEach((model) => model.style.removeProperty("visibility"));
+    root.querySelectorAll<HTMLElement>(".cube-turning-layer").forEach((layer) => layer.style.removeProperty("transform"));
+  };
+  useEffect(() => {
+    if (step === 1) return;
+    twistGesture.current.active = false;
+    clearManualTwist();
+  }, [step]);
+  const beginManualTwist = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (step !== 1) return;
+    if (twistTimer.current !== null) window.clearTimeout(twistTimer.current);
+    clearManualTwist();
+    twistGesture.current = { active: true, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, axis: null, angle: 0 };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveManualTwist = (event: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = twistGesture.current;
+    if (!gesture.active || gesture.pointerId !== event.pointerId || step !== 1) return;
+    const deltaX = event.clientX - gesture.startX;
+    const deltaY = event.clientY - gesture.startY;
+    if (!gesture.axis && Math.hypot(deltaX, deltaY) < 7) return;
+    if (!gesture.axis) gesture.axis = Math.abs(deltaX) >= Math.abs(deltaY) ? "horizontal" : "vertical";
+    const root = sequenceRef.current;
+    if (!root) return;
+    root.classList.add("is-manual-twist");
+    const horizontalModel = root.querySelector<HTMLElement>(".cube-model-horizontal");
+    const verticalModel = root.querySelector<HTMLElement>(".cube-model-vertical");
+    const horizontalLayer = root.querySelector<HTMLElement>(".horizontal-layer");
+    const verticalLayer = root.querySelector<HTMLElement>(".vertical-layer");
+    if (gesture.axis === "horizontal") {
+      gesture.angle = Math.max(-100, Math.min(100, deltaX * .72));
+      if (horizontalModel) horizontalModel.style.visibility = "visible";
+      if (verticalModel) verticalModel.style.visibility = "hidden";
+      if (horizontalLayer) horizontalLayer.style.transform = `rotateY(${gesture.angle.toFixed(2)}deg)`;
+    } else {
+      gesture.angle = Math.max(-100, Math.min(100, -deltaY * .72));
+      if (horizontalModel) horizontalModel.style.visibility = "hidden";
+      if (verticalModel) verticalModel.style.visibility = "visible";
+      if (verticalLayer) verticalLayer.style.transform = `rotateX(${gesture.angle.toFixed(2)}deg)`;
+    }
+  };
+  const endManualTwist = (event: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = twistGesture.current;
+    if (!gesture.active || gesture.pointerId !== event.pointerId) return;
+    gesture.active = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const root = sequenceRef.current;
+    if (!root || !gesture.axis) {
+      clearManualTwist();
+      return;
+    }
+    root.classList.add("is-settling-twist");
+    const target = Math.abs(gesture.angle) >= 22 ? Math.sign(gesture.angle) * 90 : 0;
+    const layer = root.querySelector<HTMLElement>(gesture.axis === "horizontal" ? ".horizontal-layer" : ".vertical-layer");
+    if (layer) layer.style.transform = `${gesture.axis === "horizontal" ? "rotateY" : "rotateX"}(${target}deg)`;
+    twistTimer.current = window.setTimeout(clearManualTwist, 460);
+  };
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    followPointer(event);
+    moveManualTwist(event);
+  };
   const randomizeScatterColor = (index: number) => {
     setScatterColors((current) => current.map((color, colorIndex) => {
       if (colorIndex !== index) return color;
@@ -768,7 +858,15 @@ function SharedLandingCube({ step }: { step: number }) {
       return choices[Math.floor(Math.random() * choices.length)];
     }));
   };
-  return <div className={`landing-cube-sequence sequence-step-${step}`} onPointerMove={followPointer}>
+  const enteringReturn = previousStep.current === 2 && step === 0;
+  return <div
+    className={`landing-cube-sequence sequence-step-${step}${isReturning || enteringReturn ? " sequence-returning" : ""}`}
+    ref={sequenceRef}
+    onPointerDown={beginManualTwist}
+    onPointerMove={handlePointerMove}
+    onPointerUp={endManualTwist}
+    onPointerCancel={endManualTwist}
+  >
     <div className="sequence-rig" ref={rigRef} aria-hidden="true">
       <div className="sequence-model">
         <div className="cube-model cube-model-horizontal">
@@ -782,14 +880,17 @@ function SharedLandingCube({ step }: { step: number }) {
       </div>
     </div>
     <div className="scatter-field" role="group" aria-label="九个可点击改色的漂浮立方体">
-      {SCATTER_POSITIONS.map(([x, y, z], index) => <button
+      {SCATTER_POSITIONS.map(([x, y, z], index) => {
+        const homeX = (index % 3 - 1) * 47;
+        const homeY = (Math.floor(index / 3) - 1) * 47;
+        return <button
         key={index}
         type="button"
         className="scatter-cube"
         aria-label={`改变第 ${index + 1} 个立方体颜色`}
         tabIndex={step === 2 ? 0 : -1}
         onClick={() => randomizeScatterColor(index)}
-        style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px`, "--scatter-z": `${z}px`, "--scatter-color": scatterColors[index], "--scatter-delay": `${index * 55}ms` } as CSSProperties}
+        style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px`, "--scatter-z": `${z}px`, "--scatter-home-x": `${homeX}px`, "--scatter-home-y": `${homeY}px`, "--scatter-color": scatterColors[index], "--scatter-delay": `${index * 55}ms` } as CSSProperties}
       >
         <span className="scatter-face scatter-front" />
         <span className="scatter-face scatter-back" />
@@ -797,7 +898,8 @@ function SharedLandingCube({ step }: { step: number }) {
         <span className="scatter-face scatter-left" />
         <span className="scatter-face scatter-top" />
         <span className="scatter-face scatter-bottom" />
-      </button>)}
+      </button>;
+      })}
     </div>
   </div>;
 }
@@ -810,6 +912,7 @@ function LandingGuideVisual({ step }: { step: number }) {
   ];
   return <div className="landing-guide-visual sequence-visual" role="group" aria-label={labels[step]}>
     <SharedLandingCube step={step} />
+    {step === 1 && <span className="twist-hint">按住魔方，横向或纵向拖动</span>}
   </div>;
 }
 
