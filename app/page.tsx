@@ -671,10 +671,14 @@ function CompressionResultWindow({ mode, result, onDownload, onDotLottie }: { mo
 
 const CUBE_FACES = ["front", "back", "right", "left", "top", "bottom"];
 
-function MagicCube({ compact = false }: { compact?: boolean }) {
+function MagicCube({ compact = false, orthographic = false }: { compact?: boolean; orthographic?: boolean }) {
   const cubeRef = useRef<HTMLDivElement>(null);
   const motion = useRef({ x: -22, y: 28, targetX: -22, targetY: 28, interacted: false, lastTime: 0 });
   useEffect(() => {
+    if (orthographic) {
+      if (cubeRef.current) cubeRef.current.style.transform = "rotateX(-26deg) rotateY(45deg)";
+      return;
+    }
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     let frame = 0;
     const animate = (time: number) => {
@@ -689,13 +693,13 @@ function MagicCube({ compact = false }: { compact?: boolean }) {
       frame = requestAnimationFrame(animate);
     };
     frame = requestAnimationFrame(animate); return () => cancelAnimationFrame(frame);
-  }, []);
+  }, [orthographic]);
   const followPointer = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "touch") return;
     const rect = event.currentTarget.getBoundingClientRect(); const nx = ((event.clientX - rect.left) / rect.width - .5) * 2; const ny = ((event.clientY - rect.top) / rect.height - .5) * 2;
     motion.current.interacted = true; motion.current.targetX = -18 - ny * 24; motion.current.targetY = 28 + nx * 62;
   };
-  return <div className={compact ? "cube-scene compact" : "cube-scene"} onPointerMove={followPointer} aria-label="跟随鼠标约一秒无回弹缓动旋转的 Jsonable 魔方视觉" role="img">
+  return <div className={`${compact ? "cube-scene compact" : "cube-scene"}${orthographic ? " orthographic" : ""}`} onPointerMove={orthographic ? undefined : followPointer} aria-label={orthographic ? "正交视角的 Jsonable 魔方" : "跟随鼠标约一秒无回弹缓动旋转的 Jsonable 魔方视觉"} role="img">
     <div className="cube-orbit cube-orbit-one" /><div className="cube-orbit cube-orbit-two" />
     <div className="magic-cube" ref={cubeRef}>
       {CUBE_FACES.map((face) => <div className={`cube-face cube-face-${face}`} key={face}>{Array.from({ length: 9 }, (_, index) => <span key={index} />)}</div>)}
@@ -717,19 +721,17 @@ function LandingGuideVisual({ step }: { step: number }) {
       {Array.from({ length: 8 }, (_, index) => <i key={index} />)}
       {Array.from({ length: 7 }, (_, index) => <b key={index} />)}
     </div>
-    <div className="cube-seat"><MagicCube compact /></div>
+    <div className="cube-seat"><MagicCube compact orthographic /></div>
+    <div className="underground-depth" aria-hidden="true"><span /><span /><span /></div>
     <div className="activation-wave" aria-hidden="true" />
     <span className="visual-status">STRUCTURE ONLINE</span>
   </div>;
 
-  if (step === 2) return <div className="landing-guide-visual morph-visual" role="img" aria-label="魔方平滑转变为可编辑的数据球">
-    <div className="morph-source"><MagicCube compact /></div>
-    <div className="data-orb" aria-hidden="true">
-      {Array.from({ length: 16 }, (_, index) => <span key={index} />)}
-    </div>
-    <div className="orb-ring ring-one" aria-hidden="true" />
-    <div className="orb-ring ring-two" aria-hidden="true" />
-    <span className="visual-status">ELEMENTS UNLOCKED</span>
+  if (step === 2) return <div className="landing-guide-visual twist-visual" role="img" aria-label="魔方依次转动顶部和右侧层级">
+    <div className="play-cube"><MagicCube compact orthographic /></div>
+    <div className="turn-axis axis-row" aria-hidden="true"><span /><span /></div>
+    <div className="turn-axis axis-column" aria-hidden="true"><span /><span /></div>
+    <span className="visual-status">LAYERS IN MOTION</span>
   </div>;
 
   return <div className="landing-guide-visual upload-visual" role="img" aria-label="等待上传文件的 Jsonable 魔方">
