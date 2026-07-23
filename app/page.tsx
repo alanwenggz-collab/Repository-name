@@ -722,7 +722,45 @@ function LandingCubie({ x, y, z, tone }: (typeof LANDING_CUBIES)[number]) {
 }
 
 function SharedLandingCube({ step }: { step: number }) {
+  const rigRef = useRef<HTMLDivElement>(null);
+  const pointerMotion = useRef({ x: -22, y: 28, targetX: -22, targetY: 28, interacted: false, lastTime: 0 });
   const [scatterColors, setScatterColors] = useState(() => SCATTER_POSITIONS.map((_, index) => SCATTER_PALETTE[index % 4]));
+  useEffect(() => {
+    pointerMotion.current.interacted = false;
+    pointerMotion.current.targetX = -22;
+    pointerMotion.current.targetY = 28;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let frame = 0;
+    const animate = (time: number) => {
+      const motion = pointerMotion.current;
+      if (step === 0 && !motion.interacted) {
+        motion.targetX = -22 + Math.sin(time / 1900) * 5;
+        motion.targetY = 28 + Math.sin(time / 2600) * 12;
+      } else if (step !== 0) {
+        motion.targetX = -22;
+        motion.targetY = 28;
+      }
+      const delta = motion.lastTime ? Math.min(40, time - motion.lastTime) : 16.67;
+      motion.lastTime = time;
+      const ease = 1 - Math.exp(-delta / 650);
+      motion.x += (motion.targetX - motion.x) * ease;
+      motion.y += (motion.targetY - motion.y) * ease;
+      rigRef.current?.style.setProperty("--sequence-rx", `${motion.x.toFixed(2)}deg`);
+      rigRef.current?.style.setProperty("--sequence-ry", `${motion.y.toFixed(2)}deg`);
+      frame = requestAnimationFrame(animate);
+    };
+    frame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frame);
+  }, [step]);
+  const followPointer = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (step !== 0 || event.pointerType === "touch") return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const nx = ((event.clientX - rect.left) / rect.width - .5) * 2;
+    const ny = ((event.clientY - rect.top) / rect.height - .5) * 2;
+    pointerMotion.current.interacted = true;
+    pointerMotion.current.targetX = -18 - ny * 24;
+    pointerMotion.current.targetY = 28 + nx * 62;
+  };
   const randomizeScatterColor = (index: number) => {
     setScatterColors((current) => current.map((color, colorIndex) => {
       if (colorIndex !== index) return color;
@@ -730,12 +768,9 @@ function SharedLandingCube({ step }: { step: number }) {
       return choices[Math.floor(Math.random() * choices.length)];
     }));
   };
-  return <div className={`landing-cube-sequence sequence-step-${step}`}>
-    <div className="sequence-rig" aria-hidden="true">
-      <div className="sequence-model sequence-model-static">
-        {LANDING_CUBIES.map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}
-      </div>
-      <div className="sequence-model sequence-model-twist">
+  return <div className={`landing-cube-sequence sequence-step-${step}`} onPointerMove={followPointer}>
+    <div className="sequence-rig" ref={rigRef} aria-hidden="true">
+      <div className="sequence-model">
         <div className="cube-model cube-model-horizontal">
           <div className="cube-fixed-layers">{LANDING_CUBIES.filter((cubie) => cubie.y !== -1).map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}</div>
           <div className="cube-turning-layer horizontal-layer">{LANDING_CUBIES.filter((cubie) => cubie.y === -1).map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}</div>
