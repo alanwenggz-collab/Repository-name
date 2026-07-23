@@ -714,6 +714,27 @@ const LANDING_STEPS = [
   { number: "03", label: "修改元素" },
 ];
 
+function TwistCube() {
+  const cubies = Array.from({ length: 27 }, (_, index) => {
+    const x = index % 3 - 1;
+    const y = Math.floor(index / 3) % 3 - 1;
+    const z = Math.floor(index / 9) - 1;
+    return { x, y, z, key: `${x}:${y}:${z}`, tone: Math.abs(x * 7 + y * 5 + z * 3) % 4 };
+  });
+  const renderCubie = ({ x, y, z, key, tone }: (typeof cubies)[number]) => <div key={key} className={`twist-cubie tone-${tone}`} style={{ "--tx": `${x * 38 - 17}px`, "--ty": `${y * 38 - 17}px`, "--tz": `${z * 38 - 17}px` } as CSSProperties}>
+    <span className={z === 1 ? "cubie-face cubie-front painted" : "cubie-face cubie-front"} />
+    <span className={z === -1 ? "cubie-face cubie-back painted" : "cubie-face cubie-back"} />
+    <span className={x === 1 ? "cubie-face cubie-right painted" : "cubie-face cubie-right"} />
+    <span className={x === -1 ? "cubie-face cubie-left painted" : "cubie-face cubie-left"} />
+    <span className={y === -1 ? "cubie-face cubie-top painted" : "cubie-face cubie-top"} />
+    <span className={y === 1 ? "cubie-face cubie-bottom painted" : "cubie-face cubie-bottom"} />
+  </div>;
+  return <div className="real-cube-rig" aria-hidden="true">
+    <div className="cube-fixed-layers">{cubies.filter((cubie) => cubie.y !== -1).map(renderCubie)}</div>
+    <div className="cube-turning-layer">{cubies.filter((cubie) => cubie.y === -1).map(renderCubie)}</div>
+  </div>;
+}
+
 function LandingGuideVisual({ step }: { step: number }) {
   if (step === 1) return <div className="landing-guide-visual circuit-visual" role="img" aria-label="魔方落入接口并激活电路地面">
     <div className="circuit-floor" aria-hidden="true">
@@ -727,10 +748,9 @@ function LandingGuideVisual({ step }: { step: number }) {
     <span className="visual-status">STRUCTURE ONLINE</span>
   </div>;
 
-  if (step === 2) return <div className="landing-guide-visual twist-visual" role="img" aria-label="魔方依次转动顶部和右侧层级">
-    <div className="play-cube"><MagicCube compact orthographic /></div>
+  if (step === 2) return <div className="landing-guide-visual twist-visual" role="img" aria-label="由二十七个小方块组成的魔方正在转动顶部层">
+    <TwistCube />
     <div className="turn-axis axis-row" aria-hidden="true"><span /><span /></div>
-    <div className="turn-axis axis-column" aria-hidden="true"><span /><span /></div>
     <span className="visual-status">LAYERS IN MOTION</span>
   </div>;
 
