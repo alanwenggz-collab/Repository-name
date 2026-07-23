@@ -880,17 +880,14 @@ function SharedLandingCube({ step }: { step: number }) {
       </div>
     </div>
     <div className="scatter-field" role="group" aria-label="九个可点击改色的漂浮立方体">
-      {SCATTER_POSITIONS.map(([x, y, z], index) => {
-        const homeX = (index % 3 - 1) * 47;
-        const homeY = (Math.floor(index / 3) - 1) * 47;
-        return <button
+      {SCATTER_POSITIONS.map(([x, y, z], index) => <button
         key={index}
         type="button"
         className="scatter-cube"
         aria-label={`改变第 ${index + 1} 个立方体颜色`}
         tabIndex={step === 2 ? 0 : -1}
         onClick={() => randomizeScatterColor(index)}
-        style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px`, "--scatter-z": `${z}px`, "--scatter-home-x": `${homeX}px`, "--scatter-home-y": `${homeY}px`, "--scatter-color": scatterColors[index], "--scatter-delay": `${index * 55}ms` } as CSSProperties}
+        style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px`, "--scatter-z": `${z}px`, "--scatter-color": scatterColors[index], "--scatter-delay": `${index * 55}ms` } as CSSProperties}
       >
         <span className="scatter-face scatter-front" />
         <span className="scatter-face scatter-back" />
@@ -898,8 +895,7 @@ function SharedLandingCube({ step }: { step: number }) {
         <span className="scatter-face scatter-left" />
         <span className="scatter-face scatter-top" />
         <span className="scatter-face scatter-bottom" />
-      </button>;
-      })}
+      </button>)}
     </div>
   </div>;
 }
@@ -913,6 +909,7 @@ function LandingGuideVisual({ step }: { step: number }) {
   return <div className="landing-guide-visual sequence-visual" role="group" aria-label={labels[step]}>
     <SharedLandingCube step={step} />
     {step === 1 && <span className="twist-hint">按住魔方，横向或纵向拖动</span>}
+    {step === 2 && <span className="twist-hint">点击可改变颜色</span>}
   </div>;
 }
 
