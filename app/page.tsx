@@ -736,8 +736,14 @@ function TwistCube() {
     <span className={y === 1 ? "cubie-face cubie-bottom painted" : "cubie-face cubie-bottom"} />
   </div>;
   return <div className="real-cube-rig" aria-hidden="true">
-    <div className="cube-fixed-layers">{cubies.filter((cubie) => cubie.y !== -1).map(renderCubie)}</div>
-    <div className="cube-turning-layer">{cubies.filter((cubie) => cubie.y === -1).map(renderCubie)}</div>
+    <div className="cube-model cube-model-horizontal">
+      <div className="cube-fixed-layers">{cubies.filter((cubie) => cubie.y !== -1).map(renderCubie)}</div>
+      <div className="cube-turning-layer horizontal-layer">{cubies.filter((cubie) => cubie.y === -1).map(renderCubie)}</div>
+    </div>
+    <div className="cube-model cube-model-vertical">
+      <div className="cube-fixed-layers">{cubies.filter((cubie) => cubie.x !== 1).map(renderCubie)}</div>
+      <div className="cube-turning-layer vertical-layer">{cubies.filter((cubie) => cubie.x === 1).map(renderCubie)}</div>
+    </div>
   </div>;
 }
 
@@ -755,9 +761,10 @@ function LandingGuideVisual({ step }: { step: number }) {
     <span className="visual-status">STRUCTURE ONLINE</span>
   </div>;
 
-  if (step === 2) return <div className="landing-guide-visual twist-visual" role="img" aria-label="由二十七个小方块组成的魔方正在转动顶部层">
+  if (step === 2) return <div className="landing-guide-visual twist-visual" role="img" aria-label="由二十七个小方块组成的魔方先转动顶部层，再转动右侧层">
     <TwistCube />
     <div className="turn-axis axis-row" aria-hidden="true"><span /><span /></div>
+    <div className="turn-axis axis-column" aria-hidden="true"><span /><span /></div>
     <span className="visual-status">LAYERS IN MOTION</span>
   </div>;
 
