@@ -491,16 +491,18 @@ const CUBE_FACES = ["front", "back", "right", "left", "top", "bottom"];
 
 function MagicCube({ compact = false }: { compact?: boolean }) {
   const cubeRef = useRef<HTMLDivElement>(null);
-  const motion = useRef({ x: -22, y: 28, targetX: -22, targetY: 28, vx: 0, vy: 0, interacted: false });
+  const motion = useRef({ x: -22, y: 28, targetX: -22, targetY: 28, interacted: false, lastTime: 0 });
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     let frame = 0;
     const animate = (time: number) => {
       const state = motion.current;
       if (!state.interacted) { state.targetX = -22 + Math.sin(time / 1900) * 5; state.targetY = 28 + Math.sin(time / 2600) * 12; }
-      state.vx = (state.vx + (state.targetX - state.x) * .032) * .88;
-      state.vy = (state.vy + (state.targetY - state.y) * .032) * .88;
-      state.x += state.vx; state.y += state.vy;
+      const delta = state.lastTime ? Math.min(40, time - state.lastTime) : 16.67;
+      state.lastTime = time;
+      const ease = 1 - Math.exp(-delta / 250);
+      state.x += (state.targetX - state.x) * ease;
+      state.y += (state.targetY - state.y) * ease;
       if (cubeRef.current) cubeRef.current.style.transform = `rotateX(${state.x.toFixed(2)}deg) rotateY(${state.y.toFixed(2)}deg)`;
       frame = requestAnimationFrame(animate);
     };
@@ -511,7 +513,7 @@ function MagicCube({ compact = false }: { compact?: boolean }) {
     const rect = event.currentTarget.getBoundingClientRect(); const nx = ((event.clientX - rect.left) / rect.width - .5) * 2; const ny = ((event.clientY - rect.top) / rect.height - .5) * 2;
     motion.current.interacted = true; motion.current.targetX = -18 - ny * 24; motion.current.targetY = 28 + nx * 62;
   };
-  return <div className={compact ? "cube-scene compact" : "cube-scene"} onPointerMove={followPointer} aria-label="跟随鼠标缓动旋转的 Jsonable 魔方视觉" role="img">
+  return <div className={compact ? "cube-scene compact" : "cube-scene"} onPointerMove={followPointer} aria-label="跟随鼠标约一秒无回弹缓动旋转的 Jsonable 魔方视觉" role="img">
     <div className="cube-orbit cube-orbit-one" /><div className="cube-orbit cube-orbit-two" />
     <div className="magic-cube" ref={cubeRef}>
       {CUBE_FACES.map((face) => <div className={`cube-face cube-face-${face}`} key={face}>{Array.from({ length: 9 }, (_, index) => <span key={index} />)}</div>)}
