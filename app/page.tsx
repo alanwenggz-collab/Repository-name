@@ -17,7 +17,6 @@ type MediaConversionResult = { text: string; kind: string; fileCount: number; or
 type MediaFrame = { dataUrl: string; width: number; height: number; duration: number };
 type EditVersion = { id: string; label: string; createdAt: number; data: unknown };
 type DiffItem = { path: string; before: string; after: string };
-type SavedDraft = { version: 1; fileName: string; originalData: unknown; data: unknown; savedAt: number };
 
 const SAMPLE = {
   name: "summer-campaign",
@@ -293,27 +292,9 @@ function replaceColor(data: unknown, fromHex: string, toHex: string, key = "root
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)); }
 
 const DRAFT_DB = "jsonable-local-drafts";
-const DRAFT_STORE = "drafts";
-const DRAFT_KEY = "latest-edit";
 
-function openDraftDb() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DRAFT_DB, 1);
-    request.onupgradeneeded = () => { if (!request.result.objectStoreNames.contains(DRAFT_STORE)) request.result.createObjectStore(DRAFT_STORE); };
-    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
-  });
-}
-
-async function saveLocalDraft(draft: SavedDraft) {
-  const db = await openDraftDb();
-  await new Promise<void>((resolve, reject) => { const transaction = db.transaction(DRAFT_STORE, "readwrite"); transaction.objectStore(DRAFT_STORE).put(draft, DRAFT_KEY); transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error); });
-  db.close();
-}
-
-async function readLocalDraft() {
-  const db = await openDraftDb();
-  const draft = await new Promise<SavedDraft | null>((resolve, reject) => { const request = db.transaction(DRAFT_STORE, "readonly").objectStore(DRAFT_STORE).get(DRAFT_KEY); request.onsuccess = () => resolve((request.result as SavedDraft | undefined) || null); request.onerror = () => reject(request.error); });
-  db.close(); return draft;
+function clearLegacyDraft() {
+  if (typeof indexedDB !== "undefined") indexedDB.deleteDatabase(DRAFT_DB);
 }
 
 function createVersion(label: string, data: unknown): EditVersion { return { id: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`, label, createdAt: Date.now(), data: clone(data) }; }
@@ -714,12 +695,6 @@ const LANDING_STEPS = [
   { number: "03", label: "修改元素" },
 ];
 
-function WorldCube() {
-  return <div className="world-cube" aria-hidden="true">
-    {CUBE_FACES.map((face) => <div className={`cube-face cube-face-${face}`} key={face}>{Array.from({ length: 9 }, (_, index) => <span key={index} />)}</div>)}
-  </div>;
-}
-
 function TwistCube() {
   const cubies = Array.from({ length: 27 }, (_, index) => {
     const x = index % 3 - 1;
@@ -749,19 +724,18 @@ function TwistCube() {
 
 function LandingGuideVisual({ step }: { step: number }) {
   if (step === 1) return <div className="landing-guide-visual circuit-visual" role="img" aria-label="魔方落入接口并激活电路地面">
-    <div className="ortho-world" aria-hidden="true">
-      <div className="world-cube-drop"><WorldCube /></div>
-      <div className="circuit-floor">
-        <span className="circuit-hole" />
-        {Array.from({ length: 8 }, (_, index) => <i key={index} />)}
-        {Array.from({ length: 7 }, (_, index) => <b key={index} />)}
-        <em className="ground-activation" />
-      </div>
+    <div className="circuit-floor" aria-hidden="true">
+      <span className="circuit-hole" />
+      {Array.from({ length: 8 }, (_, index) => <i key={index} />)}
+      {Array.from({ length: 7 }, (_, index) => <b key={index} />)}
+      <em className="ground-activation" />
     </div>
+    <div className="cube-seat"><MagicCube compact orthographic /></div>
     <span className="visual-status">STRUCTURE ONLINE</span>
   </div>;
 
-  if (step === 2) return <div className="landing-guide-visual twist-visual" role="img" aria-label="由二十七个小方块组成的魔方先转动顶部层，再转动右侧层">
+  if (step === 2) return <div className="landing-guide-visual twist-visual" role="img" aria-label="魔方以和上传场景一致的视角从接口升起，再转动顶部层和右侧层">
+    <div className="twist-launchpad" aria-hidden="true"><span /></div>
     <TwistCube />
     <div className="turn-axis axis-row" aria-hidden="true"><span /><span /></div>
     <div className="turn-axis axis-column" aria-hidden="true"><span /><span /></div>
@@ -796,8 +770,6 @@ export default function Home() {
   const [versionIndex, setVersionIndex] = useState(-1);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedVersionId, setSelectedVersionId] = useState("");
-  const [draftHydrated, setDraftHydrated] = useState(false);
-  const [lastSavedAt, setLastSavedAt] = useState(0);
   const [hasUploadedFile, setHasUploadedFile] = useState(false);
   const [fileName, setFileName] = useState("summer-campaign.json");
   const [activeTab, setActiveTab] = useState<"colors" | "shapes" | "images">("colors");
@@ -839,19 +811,8 @@ export default function Home() {
     return diffJson(versions[index - 1].data, versions[index].data);
   }, [versions, selectedVersion?.id]);
   useEffect(() => {
-    readLocalDraft().then((draft) => {
-      if (!draft || draft.version !== 1) return;
-      const initial = createVersion("原始文件", draft.originalData); const restored = JSON.stringify(draft.originalData) === JSON.stringify(draft.data) ? [initial] : [initial, createVersion("自动恢复的最近编辑状态", draft.data)];
-      versionsRef.current = restored; versionIndexRef.current = restored.length - 1; setVersions(restored); setVersionIndex(restored.length - 1); setSelectedVersionId(restored.at(-1)?.id || ""); setOriginalData(clone(draft.originalData)); setData(clone(draft.data)); setFileName(draft.fileName); setHasUploadedFile(true); setLastSavedAt(draft.savedAt); setToast("已恢复上次自动保存的编辑状态");
-    }).catch(() => { /* Private browsing may disable IndexedDB. */ }).finally(() => setDraftHydrated(true));
+    clearLegacyDraft();
   }, []);
-  useEffect(() => {
-    if (!draftHydrated || !hasUploadedFile || versionIndex < 0) return;
-    const timer = window.setTimeout(() => {
-      const savedAt = Date.now(); saveLocalDraft({ version: 1, fileName, originalData: clone(originalData), data: clone(data), savedAt }).then(() => setLastSavedAt(savedAt)).catch(() => { /* Editing remains available when local persistence is unavailable. */ });
-    }, 700);
-    return () => window.clearTimeout(timer);
-  }, [data, draftHydrated, fileName, hasUploadedFile, originalData, versionIndex]);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(""), 2800);
@@ -1047,7 +1008,7 @@ export default function Home() {
   return <main>
     <header className="topbar">
       <button className="brand" type="button" onClick={goHome} aria-label="返回 Jsonable 首页"><CubeLogo /><span>Jsonable</span></button>
-      <div className="top-actions"><span className="privacy"><span className="privacy-dot" />文件仅在本地处理</span>
+      <div className="top-actions"><span className="privacy"><span className="privacy-dot" />文件仅在本地处理，不保存</span>
         <button className="button button-ghost action-button" onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}><ActionIcon name="upload" /><span>{mediaConverting ? "正在转换" : hasUploadedFile ? "更换文件" : "上传文件"}</span></button>
         <button className="button button-ghost action-button" disabled={!hasUploadedFile || compressionCountdown !== null} title={!hasUploadedFile ? "上传 JSON 后可使用一键压缩" : undefined} onClick={() => { setCompressionResult(null); setCompressionReportOpen(false); setCompressionCountdown(3); }}><ActionIcon name="compress" /><span>{compressionCountdown !== null ? `压缩中 ${compressionCountdown}` : "一键压缩"}</span></button>
         <button className="button button-dark action-button" onClick={download} disabled={!hasUploadedFile} title={!hasUploadedFile ? "上传文件后可下载 JSON" : undefined}><span>{mediaConversion ? "下载转换 JSON" : "下载 JSON"}</span><ActionIcon name="download" /></button>
@@ -1055,9 +1016,9 @@ export default function Home() {
     </header>
     <input ref={unifiedFileRef} type="file" accept="application/json,.json,video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={unifiedUpload} hidden />
     {!hasUploadedFile ? <section className={isDraggingLanding ? "landing-hero is-dragging" : "landing-hero"} onDragEnter={(event) => { event.preventDefault(); setIsDraggingLanding(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDraggingLanding(false); }} onDrop={dropUnified}>
-      <div className="landing-copy"><span className="eyebrow">VISUAL JSON EDITOR</span><h1>让复杂动效，<br /><em>成为可见、可控的结构。</em></h1><p>JSON、MP4、GIF、APNG 与序列帧都可以。媒体文件会先转换成可播放、可编辑的 Lottie JSON。</p><div className="landing-steps" role="tablist" aria-label="Jsonable 使用流程">{LANDING_STEPS.map((item, index) => <button key={`${item.number}-${index === landingStep ? landingCycle : "idle"}`} type="button" role="tab" aria-selected={index === landingStep} className={index === landingStep ? "active" : ""} onClick={() => { setLandingStep(index); setLandingCycle((current) => current + 1); }}><span>{item.number}</span>{item.label}</button>)}</div></div>
+      <div className="landing-copy"><span className="eyebrow">VISUAL JSON EDITOR</span><h1>预览 JSON，<br /><em>编辑 Lottie。</em></h1><p>JSON、MP4、GIF、APNG 与序列帧都可以。媒体文件会先转换成可播放、可编辑的 Lottie JSON。</p><div className="landing-steps" role="tablist" aria-label="Jsonable 使用流程">{LANDING_STEPS.map((item, index) => <button key={`${item.number}-${index === landingStep ? landingCycle : "idle"}`} type="button" role="tab" aria-selected={index === landingStep} className={index === landingStep ? "active" : ""} onClick={() => { setLandingStep(index); setLandingCycle((current) => current + 1); }}><span>{item.number}</span>{item.label}</button>)}</div></div>
       <div className={`landing-upload guide-step-${landingStep}`}><LandingGuideVisual key={`${landingStep}-${landingCycle}`} step={landingStep} /><button onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "正在转换媒体..." : "选择文件"}<span>＋</span></button><strong>或把文件拖到这里</strong><small>支持单个 JSON / 视频 / 动图，也支持多选序列帧</small>{mediaConversionError && <em>{mediaConversionError}</em>}{isDraggingLanding && <div className="landing-drop-state">松开开始处理</div>}</div>
-    </section> : <section className="editor-context"><div className="file-summary"><span className="eyebrow">NOW EDITING</span><strong>{fileName}</strong><small>{isLottie(data) ? "可播放 Lottie" : "JSON 视觉结构"} · {formatBytes(new Blob([jsonText]).size)} · {lastSavedAt ? "已自动保存" : "等待自动保存"}</small></div><div className="history-actions"><button onClick={undoEdit} disabled={versionIndex <= 0} title="撤销（⌘/Ctrl + Z）">撤销</button><button onClick={redoEdit} disabled={versionIndex < 0 || versionIndex >= versions.length - 1} title="重做（⌘/Ctrl + Shift + Z）">重做</button><button onClick={restoreOriginal} disabled={versionIndex === 0}>恢复原始</button><button className="history-button" onClick={openHistory}>修改记录 <b>{Math.max(0, versions.length - 1)}</b></button>{compressionResult && <button className="history-button optimization-report-button" onClick={() => setCompressionReportOpen(true)}>压缩结果 <b>2</b></button>}</div></section>}
+    </section> : <section className="editor-context"><div className="file-summary"><span className="eyebrow">NOW EDITING</span><strong>{fileName}</strong><small>{isLottie(data) ? "可播放 Lottie" : "JSON 视觉结构"} · {formatBytes(new Blob([jsonText]).size)} · 仅保留在当前会话</small></div><div className="history-actions"><button onClick={undoEdit} disabled={versionIndex <= 0} title="撤销（⌘/Ctrl + Z）">撤销</button><button onClick={redoEdit} disabled={versionIndex < 0 || versionIndex >= versions.length - 1} title="重做（⌘/Ctrl + Shift + Z）">重做</button><button onClick={restoreOriginal} disabled={versionIndex === 0}>恢复原始</button><button className="history-button" onClick={openHistory}>修改记录 <b>{Math.max(0, versions.length - 1)}</b></button>{compressionResult && <button className="history-button optimization-report-button" onClick={() => setCompressionReportOpen(true)}>压缩结果 <b>2</b></button>}</div></section>}
     {error && <div className="error" role="alert">{error}</div>}
     {hasUploadedFile && <section className="workspace">
       <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、组合矢量和图片资源的本地批量替换。</p></div></aside>
@@ -1077,7 +1038,7 @@ export default function Home() {
       </aside>
     </section>}
     {compressionReportOpen && compressionResult && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="一键压缩结果"><div className="color-dialog compression-dialog comparison"><header><div><span className="eyebrow">ONE-CLICK COMPRESSION</span><h3>两种压缩结果</h3></div><button onClick={() => setCompressionReportOpen(false)} aria-label="关闭压缩结果">×</button></header><div className="compression-result-windows"><CompressionResultWindow mode="normal" result={compressionResult.normal} onDownload={() => downloadCompressed("normal")} /><CompressionResultWindow mode="advanced" result={compressionResult.advanced} onDownload={() => downloadCompressed("advanced")} onDotLottie={isLottie(data) ? downloadDotLottie : undefined} /></div><footer className="compression-footer compression-footer-note"><span>普通压缩不改变任何字段；高级压缩采用保真优先的结构优化策略。Lottie 文件可直接导出标准 dotLottie。</span></footer></div></div>}
-    {historyOpen && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="修改记录"><div className="color-dialog history-dialog"><header><div><span className="eyebrow">VERSION HISTORY</span><h3>修改记录</h3></div><button onClick={() => setHistoryOpen(false)} aria-label="关闭修改记录">×</button></header><div className="history-dialog-body"><aside className="version-list">{versions.map((version, index) => ({ version, index })).reverse().map(({ version, index }) => <button key={version.id} className={selectedVersion?.id === version.id ? "active" : ""} onClick={() => setSelectedVersionId(version.id)}><span><strong>{version.label}</strong><small>{new Date(version.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></span><b>{index === versionIndex ? "当前" : String(index).padStart(2, "0")}</b></button>)}</aside><section className="history-diff"><div className="history-diff-head"><div><span>版本差异</span><strong>{selectedVersion?.label || "请选择一个版本"}</strong></div><button onClick={restoreSelectedVersion} disabled={!selectedVersion || selectedVersion.id === versions[versionIndex]?.id}>恢复到此版本</button></div>{selectedVersionIndex <= 0 ? <div className="history-empty"><strong>这是原始文件</strong><p>后续的颜色、形状与图片修改都会记录在这里。</p></div> : selectedDiff.length ? <div className="diff-list">{selectedDiff.map((item, index) => <article key={`${item.path}-${index}`}><code>{item.path}</code><div><span><small>修改前</small>{item.before}</span><span><small>修改后</small>{item.after}</span></div></article>)}{selectedDiff.length >= 80 && <p className="diff-limit">仅展示前 80 处变化</p>}</div> : <div className="history-empty"><strong>没有检测到字段变化</strong><p>这个版本与前一个版本内容一致。</p></div>}</section></div><footer><span>最近状态会自动保存在当前浏览器，不会上传服务器</span><button onClick={() => setHistoryOpen(false)}>关闭</button></footer></div></div>}
+    {historyOpen && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="修改记录"><div className="color-dialog history-dialog"><header><div><span className="eyebrow">VERSION HISTORY</span><h3>修改记录</h3></div><button onClick={() => setHistoryOpen(false)} aria-label="关闭修改记录">×</button></header><div className="history-dialog-body"><aside className="version-list">{versions.map((version, index) => ({ version, index })).reverse().map(({ version, index }) => <button key={version.id} className={selectedVersion?.id === version.id ? "active" : ""} onClick={() => setSelectedVersionId(version.id)}><span><strong>{version.label}</strong><small>{new Date(version.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></span><b>{index === versionIndex ? "当前" : String(index).padStart(2, "0")}</b></button>)}</aside><section className="history-diff"><div className="history-diff-head"><div><span>版本差异</span><strong>{selectedVersion?.label || "请选择一个版本"}</strong></div><button onClick={restoreSelectedVersion} disabled={!selectedVersion || selectedVersion.id === versions[versionIndex]?.id}>恢复到此版本</button></div>{selectedVersionIndex <= 0 ? <div className="history-empty"><strong>这是原始文件</strong><p>后续的颜色、形状与图片修改都会记录在这里。</p></div> : selectedDiff.length ? <div className="diff-list">{selectedDiff.map((item, index) => <article key={`${item.path}-${index}`}><code>{item.path}</code><div><span><small>修改前</small>{item.before}</span><span><small>修改后</small>{item.after}</span></div></article>)}{selectedDiff.length >= 80 && <p className="diff-limit">仅展示前 80 处变化</p>}</div> : <div className="history-empty"><strong>没有检测到字段变化</strong><p>这个版本与前一个版本内容一致。</p></div>}</section></div><footer><span>修改记录仅保留在当前页面会话，刷新或关闭后清空</span><button onClick={() => setHistoryOpen(false)}>关闭</button></footer></div></div>}
     {colorEditor && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="颜色编辑器"><div className="color-dialog"><header><div><span className="eyebrow">COLOR EDITOR</span><h3>替换颜色</h3></div><button onClick={() => setColorEditor(null)} aria-label="关闭颜色编辑器">×</button></header><div className="color-dialog-main"><label className="large-picker" style={{ background: colorEditor.current }}><input type="color" value={colorEditor.current} onChange={(event) => changeColor(event.target.value)} /><span>点击选择色彩</span></label><div className="color-values"><label>HEX 色值</label><div><input value={colorEditor.draft} onChange={(event) => setColorEditor({ ...colorEditor, draft: event.target.value.toUpperCase() })} /><button onClick={() => changeColor(colorEditor.draft)}>应用</button></div><small>将同步修改 {colorEditor.count} 个引用，窗口不会自动关闭。</small></div></div><div className="quick-colors">{["#101513", "#E8F0ED", "#48C5A1", "#2A6F5C", "#E66E58", "#5E8DA0"].map((hex) => <button key={hex} style={{ background: hex }} onClick={() => changeColor(hex)} aria-label={`选择 ${hex}`} />)}</div><footer><span>修改已实时写入预览和 JSON</span><button onClick={() => setColorEditor(null)}>关闭</button></footer></div></div>}
     {shapeEditorOpen && activeShape && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label={`替换形状 ${activeShape.name}`}><div className="color-dialog asset-dialog"><header><div><span className="eyebrow">SVG REPLACEMENT</span><h3>替换「{activeShape.name}」</h3></div><button onClick={() => setShapeEditorOpen(false)} aria-label="关闭形状替换窗口">×</button></header><div className="asset-dialog-body"><div className="replace-card"><div className="composed-current"><ShapeThumb data={data} shape={activeShape} /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}>{uploadedSvg ? <img className="replacement-svg-preview" src={uploadedSvg.preview} alt="上传的 SVG 预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedSvg ? "已转换为矢量路径" : "上传替换形状"}</small><strong>{uploadedSvg?.fileName || "选择 SVG 文件"}</strong></span><b>{uploadedSvg ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="image/svg+xml,.svg" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{uploadedSvg && <><div className="replacement-summary"><span>已转换的矢量部分</span><b>{uploadedSvg.partCount}</b></div><button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape)} disabled={activeShape.mode === "reference"}>使用这个 SVG 替换全部同名形状</button>{activeShape.mode === "reference" && <div className="replacement-empty">当前目标是外部引用，不能直接写入 SVG 路径。</div>}</>}<p>SVG 会转换为 JSON 内的矢量路径，同时保留同名实例的位置、缩放和动画变换。</p></div></div><footer><span>文件仅在本地浏览器中处理</span><button onClick={() => setShapeEditorOpen(false)}>关闭</button></footer></div></div>}
     {imageEditorOpen && activeImage && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label={`替换图片 ${activeImage.name}`}><div className="color-dialog asset-dialog"><header><div><span className="eyebrow">IMAGE REPLACEMENT</span><h3>替换「{activeImage.name}」</h3></div><button onClick={() => setImageEditorOpen(false)} aria-label="关闭图片替换窗口">×</button></header><div className="asset-dialog-body"><div className="replace-card image-replace-card"><div className="current-image"><span className="current-image-preview"><ImageThumb source={activeImage.preview} label={activeImage.name} /></span><span><small>当前资源</small><strong>{activeImage.name}</strong><em>{activeImage.count} 个引用</em></span></div><button className="replacement-upload image-upload" onClick={() => imageFileRef.current?.click()}>{uploadedImage ? <img className="replacement-svg-preview" src={uploadedImage.dataUrl} alt="新图片预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedImage ? `${uploadedImage.width} × ${uploadedImage.height}` : "上传新图片"}</small><strong>{uploadedImage?.fileName || "选择 PNG、JPG、WebP 或 GIF"}</strong></span><b>{uploadedImage ? "重新上传" : "选择文件"}</b></button><input ref={imageFileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={loadImageReplacement} hidden />{imageError && <div className="replacement-error" role="alert">{imageError}</div>}{uploadedImage && <button className="apply-replacement" onClick={() => changeImage(activeImage)}>使用这张图片替换全部引用</button>}<p>新图片会内嵌写入 JSON，原图层的位置、尺寸、透明度和动画保持不变。</p></div></div><footer><span>文件不会上传到服务器</span><button onClick={() => setImageEditorOpen(false)}>关闭</button></footer></div></div>}
