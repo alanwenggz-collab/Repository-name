@@ -10,9 +10,17 @@ type ShapeInfo = { name: string; count: number; mode: "lottie-group" | "lottie-l
 type UploadedSvg = { fileName: string; name: string; preview: string; raw: string; group: Record<string, unknown>; partCount: number };
 type ImageInfo = { id: string; name: string; value: string; preview: string; count: number; mode: "lottie-asset" | "field"; assetId?: string; key?: string };
 type UploadedImage = { fileName: string; dataUrl: string; width: number; height: number; size: number };
+type EasingCurve = { outX: number; outY: number; inX: number; inY: number };
+type MotionElement = { id: string; name: string };
+type MotionCategory = "move" | "scale" | "opacity" | "rotation" | "other";
+type EasingInfo = EasingCurve & { id: string; count: number; paths: string[]; elements: MotionElement[]; category: MotionCategory };
 type OptimizationItem = { key: string; title: string; description: string; count: number; examples: string[] };
 type CompressionResult = { text: string; originalSize: number; compressedSize: number; percentage: number; optimizations: OptimizationItem[] };
 type CompressionResults = { normal: CompressionResult; advanced: CompressionResult };
+type FrameSamplingMethod = "half" | "third" | "fps12" | "fps8" | "custom";
+type FrameSamplingSetting = { enabled: boolean; method: FrameSamplingMethod; selectedFrames: number[] };
+type CompressionSamplingSettings = { advanced: FrameSamplingSetting };
+type SequenceFrameOption = { index: number; label: string; preview: string; time: number };
 type MediaConversionResult = { text: string; kind: string; fileCount: number; originalSize: number; payloadSize: number; jsonSize: number; percentage: number; outputName: string };
 type MediaFrame = { dataUrl: string; width: number; height: number; duration: number };
 type EditVersion = { id: string; label: string; createdAt: number; data: unknown };
@@ -38,6 +46,20 @@ const ALIASES: Record<string, ShapeName> = {
   triangle: "triangle", polygon3: "triangle", star: "star", sr: "star", heart: "heart",
   hexagon: "hexagon", polygon: "hexagon", path: "path", shape: "path", sh: "path",
 };
+const EASING_PRESETS: { name: string; curve: EasingCurve }[] = [
+  { name: "匀速", curve: { outX: 0, outY: 0, inX: 1, inY: 1 } },
+  { name: "柔和", curve: { outX: .42, outY: 0, inX: .58, inY: 1 } },
+  { name: "缓入", curve: { outX: .7, outY: 0, inX: .84, inY: 0 } },
+  { name: "缓出", curve: { outX: .16, outY: 1, inX: .3, inY: 1 } },
+  { name: "灵敏", curve: { outX: .2, outY: .85, inX: .35, inY: 1 } },
+];
+const EASING_CATEGORIES: { id: MotionCategory; label: string; english: string }[] = [
+  { id: "move", label: "移动", english: "MOVE" },
+  { id: "scale", label: "缩放", english: "SCALE" },
+  { id: "opacity", label: "透明度", english: "OPACITY" },
+  { id: "rotation", label: "旋转", english: "ROTATE" },
+  { id: "other", label: "其他", english: "OTHER" },
+];
 const COLOR_KEY = /^(c|fc|sc|color|colour|fill|fillcolor|stroke|strokecolor|background|backgroundcolor|bg|tint|foreground)$/i;
 
 function clamp(value: number) { return Math.max(0, Math.min(255, Math.round(value))); }
@@ -194,6 +216,75 @@ function replaceImageResource(data: unknown, target: ImageInfo, dataUrl: string)
   return data;
 }
 
+function easingNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.find((item) => typeof item === "number" && Number.isFinite(item)) as number | undefined;
+  return undefined;
+}
+
+function easingCurve(value: unknown): EasingCurve | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const object = value as Record<string, unknown>;
+  if (typeof object.t !== "number" || !object.o || !object.i || typeof object.o !== "object" || typeof object.i !== "object") return null;
+  const outgoing = object.o as Record<string, unknown>; const incoming = object.i as Record<string, unknown>;
+  const outX = easingNumber(outgoing.x); const outY = easingNumber(outgoing.y); const inX = easingNumber(incoming.x); const inY = easingNumber(incoming.y);
+  return [outX, outY, inX, inY].every((item) => typeof item === "number") ? { outX: outX!, outY: outY!, inX: inX!, inY: inY! } : null;
+}
+
+function easingSignature(curve: EasingCurve) {
+  return [curve.outX, curve.outY, curve.inX, curve.inY].map((value) => value.toFixed(3)).join(":");
+}
+
+function animatedPropertyCategory(key: string, value: unknown, inherited: MotionCategory | null) {
+  if (inherited) return inherited;
+  if (!value || typeof value !== "object" || Array.isArray(value) || !Object.prototype.hasOwnProperty.call(value, "k")) return null;
+  if (/^(p|px|py|pz|a)$/i.test(key)) return "move" as const;
+  if (/^s$/i.test(key)) return "scale" as const;
+  if (/^o$/i.test(key)) return "opacity" as const;
+  if (/^(r|rx|ry|rz|or)$/i.test(key)) return "rotation" as const;
+  return "other" as const;
+}
+
+function scanEasings(data: unknown) {
+  const profiles = new Map<string, EasingInfo>();
+  const scan = (value: unknown, path = "$", parentElement: MotionElement | null = null, inheritedCategory: MotionCategory | null = null) => {
+    const object = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+    const currentElement = object && typeof object.nm === "string" && (typeof object.ty === "number" || typeof object.ind === "number")
+      ? { id: path, name: object.nm.trim() || `图层 ${String(object.ind || "")}` }
+      : parentElement;
+    const curve = easingCurve(value);
+    if (curve) {
+      const category = inheritedCategory || "other"; const id = `${category}:${easingSignature(curve)}`; const existing = profiles.get(id);
+      if (existing) {
+        existing.count += 1; existing.paths.push(path);
+        if (currentElement && !existing.elements.some((element) => element.id === currentElement.id)) existing.elements.push(currentElement);
+      } else profiles.set(id, { ...curve, id, count: 1, paths: [path], elements: currentElement ? [currentElement] : [], category });
+    }
+    if (Array.isArray(value)) value.forEach((child, index) => scan(child, `${path}[${index}]`, currentElement, inheritedCategory));
+    else if (object) Object.entries(object).forEach(([key, child]) => scan(child, `${path}.${key}`, currentElement, animatedPropertyCategory(key, child, inheritedCategory)));
+  };
+  scan(data); return [...profiles.values()].sort((a, b) => b.count - a.count);
+}
+
+function updateEasingPoint(point: unknown, x: number, y: number) {
+  if (!point || typeof point !== "object" || Array.isArray(point)) return point;
+  const object = point as Record<string, unknown>;
+  const replaceValue = (current: unknown, next: number) => Array.isArray(current) ? current.map(() => next) : next;
+  return { ...object, x: replaceValue(object.x, x), y: replaceValue(object.y, y) };
+}
+
+function replaceEasing(data: unknown, from: EasingCurve, to: EasingCurve, targetPaths: Set<string>, path = "$"): unknown {
+  if (Array.isArray(data)) return data.map((child, index) => replaceEasing(child, from, to, targetPaths, `${path}[${index}]`));
+  if (data && typeof data === "object") {
+    const object = data as Record<string, unknown>; const current = easingCurve(object);
+    if (current && easingSignature(current) === easingSignature(from) && targetPaths.has(path)) {
+      return Object.fromEntries(Object.entries({ ...object, o: updateEasingPoint(object.o, to.outX, to.outY), i: updateEasingPoint(object.i, to.inX, to.inY) }).map(([key, child]) => [key, replaceEasing(child, from, to, targetPaths, `${path}.${key}`)]));
+    }
+    return Object.fromEntries(Object.entries(object).map(([key, child]) => [key, replaceEasing(child, from, to, targetPaths, `${path}.${key}`)]));
+  }
+  return data;
+}
+
 function readImageFile(file: File): Promise<UploadedImage> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader(); reader.onerror = () => reject(new Error("READ_FAILED")); reader.readAsDataURL(file);
@@ -324,6 +415,99 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+function inspectSequenceFrames(data: unknown) {
+  if (!isLottie(data)) return { matched: false, frameRate: 0, frames: [] as SequenceFrameOption[] };
+  const root = data as Record<string, unknown>;
+  const layers = Array.isArray(root.layers) ? root.layers : [];
+  const candidates = layers.map((layer) => {
+    if (!layer || typeof layer !== "object" || Array.isArray(layer)) return null;
+    const object = layer as Record<string, unknown>;
+    const ip = typeof object.ip === "number" ? object.ip : NaN;
+    const op = typeof object.op === "number" ? object.op : NaN;
+    if (object.ty !== 2 || typeof object.refId !== "string" || !Number.isFinite(ip) || !Number.isFinite(op) || op <= ip || op - ip > 1.5) return null;
+    return { ip, name: typeof object.nm === "string" ? object.nm : "", refId: object.refId };
+  }).filter((item): item is { ip: number; name: string; refId: string } => item !== null).sort((a, b) => a.ip - b.ip);
+  const meta = root.meta && typeof root.meta === "object" && !Array.isArray(root.meta) ? root.meta as Record<string, unknown> : {};
+  const namedFrames = candidates.filter((item) => /^(frame|帧)\s*[-_ ]?\d+/i.test(item.name)).length;
+  const matched = candidates.length >= 8 && layers.length > 0 && candidates.length / layers.length >= .7 && (typeof meta.sourceFrames === "number" || namedFrames >= Math.ceil(candidates.length * .5));
+  if (!matched) return { matched: false, frameRate: 0, frames: [] as SequenceFrameOption[] };
+  const frameRate = typeof root.fr === "number" && root.fr > 0 ? root.fr : 30;
+  const assets = Array.isArray(root.assets) ? root.assets.filter((asset): asset is Record<string, unknown> => !!asset && typeof asset === "object" && !Array.isArray(asset)) : [];
+  const assetMap = new Map(assets.filter((asset) => typeof asset.id === "string").map((asset) => [asset.id as string, asset]));
+  const frames = candidates.map((item, index) => {
+    const asset = assetMap.get(item.refId); const path = typeof asset?.p === "string" ? asset.p : ""; const folder = typeof asset?.u === "string" ? asset.u : "";
+    return { index, label: item.name || `帧 ${String(index + 1).padStart(3, "0")}`, preview: /^data:|^https?:|^\//i.test(path) ? path : `${folder}${path}`, time: item.ip / frameRate };
+  });
+  return { matched: true, frameRate, frames };
+}
+
+function sampleSequenceFrames(data: unknown, method: FrameSamplingMethod, selectedFrames: number[] = []) {
+  const sampled = clone(data);
+  if (!isLottie(sampled)) return { data: sampled, matched: false, optimization: null as OptimizationItem | null };
+  const root = sampled as Record<string, unknown>;
+  const sourceRoot = data as Record<string, unknown>;
+  const sourceTimeline = { fr: sourceRoot.fr, ip: sourceRoot.ip, op: sourceRoot.op };
+  const layers = Array.isArray(root.layers) ? root.layers : [];
+  const candidates = layers.map((layer, index) => {
+    if (!layer || typeof layer !== "object" || Array.isArray(layer)) return null;
+    const object = layer as Record<string, unknown>;
+    const ip = typeof object.ip === "number" ? object.ip : NaN;
+    const op = typeof object.op === "number" ? object.op : NaN;
+    if (object.ty !== 2 || typeof object.refId !== "string" || !Number.isFinite(ip) || !Number.isFinite(op) || op <= ip || op - ip > 1.5) return null;
+    return { index, layer: object, ip, op, refId: object.refId, name: typeof object.nm === "string" ? object.nm : "" };
+  }).filter((item): item is { index: number; layer: Record<string, unknown>; ip: number; op: number; refId: string; name: string } => item !== null);
+  const meta = root.meta && typeof root.meta === "object" && !Array.isArray(root.meta) ? root.meta as Record<string, unknown> : {};
+  const namedFrames = candidates.filter((item) => /^(frame|帧)\s*[-_ ]?\d+/i.test(item.name)).length;
+  const matched = candidates.length >= 8 && layers.length > 0 && candidates.length / layers.length >= .7 && (typeof meta.sourceFrames === "number" || namedFrames >= Math.ceil(candidates.length * .5));
+  if (!matched) return { data: sampled, matched: false, optimization: null as OptimizationItem | null };
+  const frameRate = typeof root.fr === "number" && root.fr > 0 ? root.fr : 30;
+  const stride = method === "half" ? 2 : method === "third" ? 3 : method === "custom" ? 1 : Math.max(1, Math.ceil(frameRate / (method === "fps12" ? 12 : 8)));
+  const methodLabel = method === "half" ? "均匀保留 1/2" : method === "third" ? "均匀保留 1/3" : method === "fps12" ? "每秒最多保留 12 张图片" : method === "fps8" ? "每秒最多保留 8 张图片" : "自定义选帧";
+  if (stride <= 1 && method !== "custom") return {
+    data: sampled,
+    matched: true,
+    optimization: { key: "sequence-frame-sampling", title: "序列图片无需抽取", description: "当前图片数量已不高于所选目标，时间轴帧率和时长保持原值。", count: 0, examples: [`原始 ${frameRate} FPS 保持不变 · ${methodLabel}`] },
+  };
+  const ordered = [...candidates].sort((a, b) => a.ip - b.ip);
+  const customSelection = new Set(selectedFrames);
+  const retained = method === "custom"
+    ? ordered.filter((_, index) => customSelection.has(index))
+    : ordered.filter((_, index) => index % stride === 0);
+  if (!retained.length) retained.push(ordered[0]);
+  const retainedIndexes = new Set(retained.map((item) => item.index));
+  ordered.forEach((item) => {
+    if (retainedIndexes.has(item.index)) return;
+    const earlier = retained.filter((candidate) => candidate.ip <= item.ip);
+    const replacement = earlier[earlier.length - 1] ?? retained[0];
+    item.layer.refId = replacement.refId;
+  });
+  if (Array.isArray(root.assets)) {
+    const assets = root.assets.filter((asset): asset is Record<string, unknown> => !!asset && typeof asset === "object" && !Array.isArray(asset));
+    const assetMap = new Map(assets.filter((asset) => typeof asset.id === "string").map((asset) => [asset.id as string, asset]));
+    const used = new Set<string>(); const queue: string[] = [];
+    const scanRefs = (value: unknown) => {
+      if (Array.isArray(value)) value.forEach(scanRefs);
+      else if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([key, child]) => {
+        if (key === "refId" && typeof child === "string" && !used.has(child)) { used.add(child); queue.push(child); }
+        else scanRefs(child);
+      });
+    };
+    scanRefs(Object.fromEntries(Object.entries(root).filter(([key]) => key !== "assets")));
+    while (queue.length) { const asset = assetMap.get(queue.shift() || ""); if (asset) scanRefs(asset); }
+    root.assets = assets.filter((asset) => typeof asset.id !== "string" || used.has(asset.id));
+  }
+  (["fr", "ip", "op"] as const).forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(sourceRoot, key)) root[key] = sourceTimeline[key];
+    else delete root[key];
+  });
+  const removed = candidates.length - retained.length;
+  return {
+    data: sampled,
+    matched: true,
+    optimization: { key: "sequence-frame-sampling", title: `序列图片抽取 · ${methodLabel}`, description: "保留全部时间轴帧层与原始 ip、op、fr，仅让被抽取帧复用最近的保留图片，并删除不再引用的图片资产。", count: removed, examples: [`时间轴仍为 ${candidates.length} 帧 · 独立图片 ${retained.length} 张`, method === "custom" ? `已选择 ${retained.length} 张独立图片` : `原始 ${frameRate} FPS 保持不变 · 每 ${stride} 帧保留 1 张图片`] },
+  };
+}
+
 function optimizeJson(data: unknown, prettyText: string) {
   const report = new Map<string, OptimizationItem>();
   const record = (key: string, title: string, description: string, example: string, amount = 1) => {
@@ -345,7 +529,7 @@ function optimizeJson(data: unknown, prettyText: string) {
     return found && safelyStatic ? clone(value) : undefined;
   };
   const walk = (value: unknown, path = "$", parentKey = "") : unknown => {
-    if (typeof value === "number" && Number.isFinite(value) && !Number.isInteger(value)) {
+    if (typeof value === "number" && Number.isFinite(value) && !Number.isInteger(value) && !["fr", "ip", "op", "st", "sr", "t"].includes(parentKey)) {
       const rounded = Math.round(value * 100000) / 100000;
       if (rounded !== value) record("precision", "收敛数值精度", "将过长小数统一保留到 5 位，减少路径和关键帧数据。", path);
       return rounded;
@@ -635,6 +819,16 @@ function ImageThumb({ source, label }: { source: string; label: string }) {
   return source ? <img src={source} alt={label} /> : <span className="image-placeholder">IMG</span>;
 }
 
+function EasingPreview({ curve, compact = false }: { curve: EasingCurve; compact?: boolean }) {
+  const x1 = 8 + curve.outX * 80; const y1 = 88 - curve.outY * 80; const x2 = 8 + curve.inX * 80; const y2 = 88 - curve.inY * 80;
+  return <svg className={compact ? "easing-preview compact" : "easing-preview"} viewBox="0 0 96 96" role="img" aria-label={`贝塞尔曲线 ${curve.outX.toFixed(2)}, ${curve.outY.toFixed(2)}, ${curve.inX.toFixed(2)}, ${curve.inY.toFixed(2)}`}>
+    <path className="easing-grid" d="M8 8V88H88" />
+    <path className="easing-handle" d={`M8 88L${x1} ${y1}M${x2} ${y2}L88 8`} />
+    <path className="easing-path" d={`M8 88C${x1} ${y1} ${x2} ${y2} 88 8`} />
+    <circle className="easing-point" cx={x1} cy={y1} r="3" /><circle className="easing-point" cx={x2} cy={y2} r="3" />
+  </svg>;
+}
+
 function CubeLogo() {
   return <img className="brand-logo" src="/jsonable-logo-v2.png" alt="" aria-hidden="true" />;
 }
@@ -645,9 +839,32 @@ function ActionIcon({ name }: { name: "upload" | "compress" | "download" }) {
   return <svg className="action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v12m0 0 4.5-4.5M12 16l-4.5-4.5M5 20h14" /></svg>;
 }
 
-function CompressionResultWindow({ mode, result, onDownload, onDotLottie }: { mode: "normal" | "advanced"; result: CompressionResult; onDownload(): void; onDotLottie?(): void }) {
+function CompressionResultWindow({ mode, result, sampling, frames = [], onSamplingChange, onDownload, onDotLottie }: { mode: "normal" | "advanced"; result: CompressionResult; sampling?: FrameSamplingSetting; frames?: SequenceFrameOption[]; onSamplingChange?(next: FrameSamplingSetting): void; onDownload(): void; onDotLottie?(): void }) {
   const advanced = mode === "advanced";
-  return <section className={advanced ? "compression-result-window advanced" : "compression-result-window"}><div className="result-window-head"><div><span>{advanced ? "ADVANCED OPTIMIZATION" : "STANDARD MINIFY"}</span><h4>{advanced ? "高级压缩" : "普通压缩"}{advanced && <b>PRO</b>}</h4></div><strong>-{result.percentage.toFixed(1)}%</strong></div><div className="result-size-row"><span><small>压缩前</small>{formatBytes(result.originalSize)}</span><i>→</i><span><small>压缩后</small>{formatBytes(result.compressedSize)}</span></div><div className="result-work-list"><div><span>完成的处理</span><b>{result.optimizations.reduce((sum, item) => sum + item.count, 0)} 处</b></div>{result.optimizations.map((item) => <article key={item.key}><span>{String(item.count).padStart(2, "0")}</span><div><strong>{item.title}</strong><p>{item.description}</p>{item.examples.length > 0 && <ul>{item.examples.map((example) => <li key={example}><code>{example}</code></li>)}</ul>}</div></article>)}</div><div className="result-downloads"><button className="result-download" onClick={onDownload}><ActionIcon name="download" /><span>下载 JSON</span></button>{advanced && onDotLottie && <button className="result-download dotlottie" onClick={onDotLottie}><span className="dotlottie-mark">.L</span><span>导出 dotLottie</span></button>}</div></section>;
+  const [framePickerCollapsed, setFramePickerCollapsed] = useState(false);
+  const activeSampling = sampling ?? { enabled: false, method: "half" as FrameSamplingMethod, selectedFrames: [] };
+  const samplingAvailable = advanced && frames.length > 0;
+  const sampledFrames = advanced && result.optimizations.some((item) => item.key === "sequence-frame-sampling" && item.count > 0);
+  const selected = new Set(activeSampling.selectedFrames);
+  const chooseFrames = (next: number[]) => onSamplingChange?.({ ...activeSampling, selectedFrames: [...new Set(next)].sort((a, b) => a - b) });
+  const changeMethod = (method: FrameSamplingMethod) => {
+    if (method === "custom") setFramePickerCollapsed(false);
+    onSamplingChange?.({ ...activeSampling, method, selectedFrames: method === "custom" && !activeSampling.selectedFrames.length ? frames.map((frame) => frame.index) : activeSampling.selectedFrames });
+  };
+  const toggleFrame = (index: number) => {
+    if (selected.has(index) && selected.size === 1) return;
+    chooseFrames(selected.has(index) ? activeSampling.selectedFrames.filter((item) => item !== index) : [...activeSampling.selectedFrames, index]);
+  };
+  return <section className={advanced ? "compression-result-window advanced" : "compression-result-window"}>
+    <div className="result-window-head"><div><span>{advanced ? "ADVANCED OPTIMIZATION" : "STANDARD MINIFY"}</span><h4>{advanced ? "高级压缩" : "普通压缩"}{advanced && <b>PRO</b>}{advanced && <b className="sampling-badge">支持抽帧</b>}{sampledFrames && <b className="lossy-badge">有损抽帧</b>}</h4></div><strong>-{result.percentage.toFixed(1)}%</strong></div>
+    <div className="result-size-row"><span><small>压缩前</small>{formatBytes(result.originalSize)}</span><i>→</i><span><small>压缩后</small>{formatBytes(result.compressedSize)}</span></div>
+    {advanced && <><div className="frame-sampling-title"><div><strong>高级压缩抽帧</strong><small>预设方法和具体帧选择均可设置</small></div><span>可选</span></div>
+    <div className="frame-sampling-options"><label><input type="checkbox" checked={activeSampling.enabled} disabled={!samplingAvailable} onChange={(event) => onSamplingChange?.({ ...activeSampling, enabled: event.target.checked })} /><span>启用序列帧抽帧<small>{samplingAvailable ? "只减少图片帧，不改变原始帧率和时长" : "当前文件未识别到序列帧动画"}</small></span></label><select value={activeSampling.method} disabled={!samplingAvailable || !activeSampling.enabled} onChange={(event) => changeMethod(event.target.value as FrameSamplingMethod)} aria-label="高级压缩抽帧方法"><option value="half">均匀保留 1/2</option><option value="third">均匀保留 1/3</option><option value="fps12">每秒最多保留 12 张</option><option value="fps8">每秒最多保留 8 张</option><option value="custom">自定义选择具体帧</option></select></div>
+    {activeSampling.enabled && activeSampling.method === "custom" && samplingAvailable && !framePickerCollapsed && <div className="frame-picker"><div className="frame-picker-toolbar"><span>已保留 {selected.size || frames.length} / {frames.length} 张图片</span><div><button onClick={() => chooseFrames(frames.map((frame) => frame.index))}>全选</button><button onClick={() => chooseFrames(frames.filter((_, index) => index % 2 === 0).map((frame) => frame.index))}>隔帧</button><button onClick={() => chooseFrames(frames.filter((frame) => !selected.has(frame.index)).map((frame) => frame.index).slice(0).length ? frames.filter((frame) => !selected.has(frame.index)).map((frame) => frame.index) : [frames[0].index])}>反选</button><button onClick={() => chooseFrames([frames[0].index])}>仅首帧</button><button className="frame-picker-done" onClick={() => setFramePickerCollapsed(true)}>完成选帧</button></div></div><div className="frame-picker-grid">{frames.map((frame) => <button key={frame.index} type="button" className={selected.has(frame.index) ? "selected" : ""} aria-pressed={selected.has(frame.index)} onClick={() => toggleFrame(frame.index)}>{frame.preview ? <img src={frame.preview} alt="" /> : <span className="frame-placeholder">{String(frame.index + 1).padStart(3, "0")}</span>}<span><b>F{String(frame.index + 1).padStart(3, "0")}</b><small>{frame.time.toFixed(2)}s</small></span></button>)}</div></div>}
+    {activeSampling.enabled && activeSampling.method === "custom" && samplingAvailable && framePickerCollapsed && <div className="frame-picker-collapsed"><span>已完成选帧，保留 {selected.size || frames.length} 张独立图片</span><button onClick={() => setFramePickerCollapsed(false)}>继续选择</button></div>}</>}
+    <div className="result-work-list"><div><span>完成的处理</span><b>{result.optimizations.reduce((sum, item) => sum + item.count, 0)} 处</b></div>{result.optimizations.map((item) => <article key={item.key}><span>{String(item.count).padStart(2, "0")}</span><div><strong>{item.title}</strong><p>{item.description}</p>{item.examples.length > 0 && <ul>{item.examples.map((example) => <li key={example}><code>{example}</code></li>)}</ul>}</div></article>)}</div>
+    <div className="result-downloads" data-testid={`${mode}-download-actions`}><button className="result-download" onClick={onDownload} data-testid={`${mode}-download-json`}><ActionIcon name="download" /><span>{advanced && activeSampling.enabled && activeSampling.method === "custom" ? "确认并下载 JSON" : "下载 JSON"}</span></button>{advanced && onDotLottie && <button className="result-download dotlottie" onClick={onDotLottie}><span className="dotlottie-mark">.L</span><span>导出 dotLottie</span></button>}</div>
+  </section>;
 }
 
 const CUBE_FACES = ["front", "back", "right", "left", "top", "bottom"];
@@ -703,15 +920,15 @@ const LANDING_CUBIES = Array.from({ length: 27 }, (_, index) => {
 });
 
 const SCATTER_POSITIONS = [
-  [-132, -78, 8, -26, 18], [-24, -108, 40, -16, 34], [118, -72, 0, -28, 42],
-  [-154, -2, 24, -18, 38], [2, -8, 62, -24, 26], [150, 10, 18, -14, 32],
-  [-112, 84, 2, -30, 22], [18, 104, 34, -17, 44], [128, 76, 10, -27, 30],
+  [-108, -64, 0], [-20, -88, 0], [97, -59, 0],
+  [-126, -2, 0], [2, -7, 0], [123, 8, 0],
+  [-92, 69, 0], [15, 85, 0], [105, 62, 0],
 ] as const;
 
-const SCATTER_PALETTE = ["#48c5a1", "#79e1c2", "#dfe9e5", "#268f72", "#62a7d8", "#d887b5", "#e08b67"];
+const SCATTER_PALETTE = ["#54d2ae", "#82e6c7", "#dfe9e5", "#2b9a79", "#62a7d8", "#d887b5", "#e08b67"];
 const initialScatterColors = () => SCATTER_POSITIONS.map((_, index) => SCATTER_PALETTE[index % 4]);
 
-function LandingCubie({ x, y, z, tone }: (typeof LANDING_CUBIES)[number]) {
+function LandingCubie({ x, y, z, tone }: Omit<(typeof LANDING_CUBIES)[number], "key">) {
   return <div className={`twist-cubie tone-${tone}`} style={{ "--tx": `${x * 38 - 17}px`, "--ty": `${y * 38 - 17}px`, "--tz": `${z * 38}px` } as CSSProperties}>
     <span className={z === 1 ? "cubie-face cubie-front painted" : "cubie-face cubie-front"} />
     <span className={z === -1 ? "cubie-face cubie-back painted" : "cubie-face cubie-back"} />
@@ -723,29 +940,19 @@ function LandingCubie({ x, y, z, tone }: (typeof LANDING_CUBIES)[number]) {
 }
 
 function SharedLandingCube({ step }: { step: number }) {
+  // Opacity on a CSS 3D ancestor flattens the subtree in Chromium and can flash
+  // one face. Both scenes stay mounted and exchange with preserve-3d transforms.
   const sequenceRef = useRef<HTMLDivElement>(null);
   const rigRef = useRef<HTMLDivElement>(null);
   const pointerMotion = useRef({ x: -22, y: 28, targetX: -22, targetY: 28, interacted: false, lastTime: 0 });
   const twistGesture = useRef<{ active: boolean; pointerId: number; startX: number; startY: number; axis: "horizontal" | "vertical" | null; angle: number }>({ active: false, pointerId: -1, startX: 0, startY: 0, axis: null, angle: 0 });
   const twistTimer = useRef<number | null>(null);
   const previousStep = useRef(step);
-  const returnTimer = useRef<number | null>(null);
-  const [isReturning, setIsReturning] = useState(false);
   const [scatterColors, setScatterColors] = useState(initialScatterColors);
   useEffect(() => {
     const lastStep = previousStep.current;
     previousStep.current = step;
-    if (returnTimer.current !== null) window.clearTimeout(returnTimer.current);
-    if (lastStep === 2 && step === 0) {
-      setScatterColors(initialScatterColors());
-      setIsReturning(true);
-      returnTimer.current = window.setTimeout(() => setIsReturning(false), 920);
-    } else {
-      setIsReturning(false);
-    }
-    return () => {
-      if (returnTimer.current !== null) window.clearTimeout(returnTimer.current);
-    };
+    if (lastStep === 2 && step === 0) setScatterColors(initialScatterColors());
   }, [step]);
   useEffect(() => () => {
     if (twistTimer.current !== null) window.clearTimeout(twistTimer.current);
@@ -858,44 +1065,74 @@ function SharedLandingCube({ step }: { step: number }) {
       return choices[Math.floor(Math.random() * choices.length)];
     }));
   };
-  const enteringReturn = previousStep.current === 2 && step === 0;
+  const selectNearestScatter = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (step !== 2) return;
+    event.stopPropagation();
+    const targets = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("[data-scatter-index]"));
+    let nearestIndex = -1;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    targets.forEach((target) => {
+      const rect = target.getBoundingClientRect();
+      const distance = Math.hypot(event.clientX - (rect.left + rect.width / 2), event.clientY - (rect.top + rect.height / 2));
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestIndex = Number(target.dataset.scatterIndex);
+      }
+    });
+    if (nearestIndex >= 0) randomizeScatterColor(nearestIndex);
+  };
   return <div
-    className={`landing-cube-sequence sequence-step-${step}${isReturning || enteringReturn ? " sequence-returning" : ""}`}
+    className={`landing-cube-sequence sequence-step-${step}`}
     ref={sequenceRef}
     onPointerDown={beginManualTwist}
     onPointerMove={handlePointerMove}
     onPointerUp={endManualTwist}
     onPointerCancel={endManualTwist}
   >
-    <div className="sequence-rig" ref={rigRef} aria-hidden="true">
-      <div className="sequence-model">
-        <div className="cube-model cube-model-horizontal">
-          <div className="cube-fixed-layers">{LANDING_CUBIES.filter((cubie) => cubie.y !== -1).map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}</div>
-          <div className="cube-turning-layer horizontal-layer">{LANDING_CUBIES.filter((cubie) => cubie.y === -1).map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}</div>
-        </div>
-        <div className="cube-model cube-model-vertical">
-          <div className="cube-fixed-layers">{LANDING_CUBIES.filter((cubie) => cubie.x !== 1).map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}</div>
-          <div className="cube-turning-layer vertical-layer">{LANDING_CUBIES.filter((cubie) => cubie.x === 1).map((cubie) => <LandingCubie key={cubie.key} {...cubie} />)}</div>
+    <div className="sequence-rig-fade" aria-hidden="true">
+      <div className="sequence-rig" ref={rigRef}>
+        <div className="sequence-model">
+          <div className="cube-model cube-model-horizontal">
+            <div className="cube-fixed-layers">{LANDING_CUBIES.filter((cubie) => cubie.y !== -1).map(({ key, ...cubie }) => <LandingCubie key={key} {...cubie} />)}</div>
+            <div className="cube-turning-layer horizontal-layer">{LANDING_CUBIES.filter((cubie) => cubie.y === -1).map(({ key, ...cubie }) => <LandingCubie key={key} {...cubie} />)}</div>
+          </div>
+          <div className="cube-model cube-model-vertical">
+            <div className="cube-fixed-layers">{LANDING_CUBIES.filter((cubie) => cubie.x !== 1).map(({ key, ...cubie }) => <LandingCubie key={key} {...cubie} />)}</div>
+            <div className="cube-turning-layer vertical-layer">{LANDING_CUBIES.filter((cubie) => cubie.x === 1).map(({ key, ...cubie }) => <LandingCubie key={key} {...cubie} />)}</div>
+          </div>
         </div>
       </div>
     </div>
-    <div className="scatter-field" role="group" aria-label="九个可点击改色的漂浮立方体">
-      {SCATTER_POSITIONS.map(([x, y, z, rotateX, rotateY], index) => <button
+    <div className="scatter-fade" aria-hidden="true">
+      <div className="scatter-field">
+        {SCATTER_POSITIONS.map(([x, y, z], index) => <div
+          key={index}
+          className="scatter-cube"
+          style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px`, "--scatter-z": `${z}px`, "--scatter-color": scatterColors[index], "--scatter-delay": `${index * 55}ms` } as CSSProperties}
+        >
+          <span className="scatter-face scatter-front" />
+          <span className="scatter-face scatter-back" />
+          <span className="scatter-face scatter-right" />
+          <span className="scatter-face scatter-left" />
+          <span className="scatter-face scatter-top" />
+          <span className="scatter-face scatter-bottom" />
+        </div>)}
+      </div>
+    </div>
+    <div className="scatter-hit-layer" role="group" aria-label="九个可点击改色的漂浮立方体" onPointerUp={selectNearestScatter}>
+      {SCATTER_POSITIONS.map(([x, y], index) => <button
         key={index}
         type="button"
-        className="scatter-cube"
+        className="scatter-hit"
+        data-scatter-index={index}
         aria-label={`改变第 ${index + 1} 个立方体颜色`}
         tabIndex={step === 2 ? 0 : -1}
-        onClick={() => randomizeScatterColor(index)}
-        style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px`, "--scatter-z": `${z}px`, "--scatter-rx": `${rotateX}deg`, "--scatter-ry": `${rotateY}deg`, "--scatter-color": scatterColors[index], "--scatter-delay": `${index * 55}ms` } as CSSProperties}
-      >
-        <span className="scatter-face scatter-front" />
-        <span className="scatter-face scatter-back" />
-        <span className="scatter-face scatter-right" />
-        <span className="scatter-face scatter-left" />
-        <span className="scatter-face scatter-top" />
-        <span className="scatter-face scatter-bottom" />
-      </button>)}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          if (event.detail === 0) randomizeScatterColor(index);
+        }}
+        style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px` } as CSSProperties}
+      />)}
     </div>
   </div>;
 }
@@ -922,7 +1159,7 @@ function VisualPreview({ data, colors, shapes, images, isDefault }: { data: unkn
   const canvasBackground = typeof canvas.background === "string" ? parseCssColor(canvas.background) : null;
   return <div className="token-stage" style={{ background: canvasBackground || "#101513" }}>
     {images.slice(0, 8).map((item) => <div className="preview-image" key={item.id}><ImageThumb source={item.preview} label={item.name} /><small>{item.name}</small></div>)}
-    {items.map((item, index) => <div className="preview-object" key={`${item.name}-${index}`} style={{ color: colors[index % Math.max(colors.length, 1)]?.hex || "#48C5A1" }}><ComposedMark /><small>{item.name}</small></div>)}
+    {items.map((item, index) => <div className="preview-object" key={`${item.name}-${index}`} style={{ color: colors[index % Math.max(colors.length, 1)]?.hex || "#54D2AE" }}><ComposedMark /><small>{item.name}</small></div>)}
     {!items.length && !images.length && colors.map((color) => <div className="preview-color" key={color.hex} style={{ background: color.hex }}><span>{color.hex}</span></div>)}
     {!items.length && !images.length && !colors.length && <div className="preview-message">暂未找到可视化元素<br /><small>支持颜色、命名组合、Lottie 与常见图片字段</small></div>}
   </div>;
@@ -937,10 +1174,14 @@ export default function Home() {
   const [selectedVersionId, setSelectedVersionId] = useState("");
   const [hasUploadedFile, setHasUploadedFile] = useState(false);
   const [fileName, setFileName] = useState("summer-campaign.json");
-  const [activeTab, setActiveTab] = useState<"colors" | "shapes" | "images">("colors");
-  const [inspectorTab, setInspectorTab] = useState<"preview" | "json">("preview");
+  const [activeTab, setActiveTab] = useState<"colors" | "shapes" | "images" | "easing">("colors");
   const [selectedShape, setSelectedShape] = useState("");
   const [selectedImage, setSelectedImage] = useState("");
+  const [selectedEasing, setSelectedEasing] = useState("");
+  const [easingDraft, setEasingDraft] = useState<EasingCurve | null>(null);
+  const [easingDetailOpen, setEasingDetailOpen] = useState(false);
+  const [selectedEasingCategory, setSelectedEasingCategory] = useState<MotionCategory>("move");
+  const [selectedMotionElement, setSelectedMotionElement] = useState("");
   const [uploadedSvg, setUploadedSvg] = useState<UploadedSvg | null>(null);
   const [uploadedImage, setUploadedImage] = useState<UploadedImage | null>(null);
   const [replacementError, setReplacementError] = useState("");
@@ -948,9 +1189,14 @@ export default function Home() {
   const [colorEditor, setColorEditor] = useState<{ current: string; draft: string; count: number } | null>(null);
   const [shapeEditorOpen, setShapeEditorOpen] = useState(false);
   const [imageEditorOpen, setImageEditorOpen] = useState(false);
+  const [batchImageEditorOpen, setBatchImageEditorOpen] = useState(false);
+  const [batchUploadedImages, setBatchUploadedImages] = useState<UploadedImage[]>([]);
+  const [batchImageTargets, setBatchImageTargets] = useState<string[]>([]);
+  const [batchImageMappings, setBatchImageMappings] = useState<Record<string, number>>({});
   const [compressionCountdown, setCompressionCountdown] = useState<number | null>(null);
   const [compressionResult, setCompressionResult] = useState<CompressionResults | null>(null);
   const [compressionReportOpen, setCompressionReportOpen] = useState(false);
+  const [compressionSampling, setCompressionSampling] = useState<CompressionSamplingSettings>({ advanced: { enabled: false, method: "half", selectedFrames: [] } });
   const [mediaConverting, setMediaConverting] = useState(false);
   const [mediaConversion, setMediaConversion] = useState<MediaConversionResult | null>(null);
   const [mediaConversionError, setMediaConversionError] = useState("");
@@ -962,13 +1208,52 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const replacementFileRef = useRef<HTMLInputElement>(null);
   const imageFileRef = useRef<HTMLInputElement>(null);
+  const batchImageFileRef = useRef<HTMLInputElement>(null);
   const unifiedFileRef = useRef<HTMLInputElement>(null);
   const versionsRef = useRef<EditVersion[]>([]);
   const versionIndexRef = useRef(-1);
   const colors = useMemo(() => scanColors(data), [data]);
   const shapes = useMemo(() => scanShapes(data), [data]);
   const images = useMemo(() => scanImages(data), [data]);
+  const easings = useMemo(() => scanEasings(data), [data]);
+  const motionElements = useMemo(() => {
+    const elements = new Map<string, MotionElement>();
+    easings.forEach((profile) => profile.elements.forEach((element) => elements.set(element.id, element)));
+    return [...elements.values()];
+  }, [easings]);
+  const easingCategoryCounts = useMemo(() => Object.fromEntries(EASING_CATEGORIES.map((category) => [category.id, easings.filter((profile) => profile.category === category.id).length])) as Record<MotionCategory, number>, [easings]);
+  const filteredEasings = useMemo(() => easings.filter((profile) => profile.category === selectedEasingCategory && (!selectedMotionElement || profile.elements.some((element) => element.id === selectedMotionElement))), [easings, selectedEasingCategory, selectedMotionElement]);
   const jsonText = useMemo(() => JSON.stringify(data, null, 2), [data]);
+  const sequenceFrameInspection = useMemo(() => inspectSequenceFrames(data), [data]);
+  const sequenceSamplingAvailable = sequenceFrameInspection.matched;
+  const buildCompressionResults = (settings: CompressionSamplingSettings): CompressionResults => {
+    const originalSize = new Blob([jsonText]).size;
+    const normalText = JSON.stringify(data); const normalSize = new Blob([normalText]).size; const normalPercentage = originalSize ? Math.max(0, (1 - normalSize / originalSize) * 100) : 0;
+    const normalOptimizations: OptimizationItem[] = [{ key: "whitespace", title: "移除格式空白", description: "仅删除缩进、换行与多余空格，不改变字段与数值。", count: 1, examples: [`整份文件 · 减少 ${formatBytes(Math.max(0, originalSize - new Blob([JSON.stringify(data)]).size))}`] }];
+    const advancedSample = settings.advanced.enabled ? sampleSequenceFrames(data, settings.advanced.method, settings.advanced.selectedFrames) : { data: clone(data), matched: sequenceSamplingAvailable, optimization: null };
+    const optimized = optimizeJson(advancedSample.data, JSON.stringify(advancedSample.data, null, 2));
+    if (advancedSample.optimization) optimized.optimizations.unshift(advancedSample.optimization);
+    let advancedText = optimized.text;
+    if (settings.advanced.enabled && isLottie(data)) {
+      const optimizedData = JSON.parse(advancedText) as Record<string, unknown>;
+      const sourceRoot = data as Record<string, unknown>;
+      (["fr", "ip", "op"] as const).forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(sourceRoot, key)) optimizedData[key] = sourceRoot[key];
+        else delete optimizedData[key];
+      });
+      advancedText = JSON.stringify(optimizedData);
+    }
+    const advancedSize = new Blob([advancedText]).size; const advancedPercentage = originalSize ? Math.max(0, (1 - advancedSize / originalSize) * 100) : 0;
+    return {
+      normal: { text: normalText, originalSize, compressedSize: normalSize, percentage: normalPercentage, optimizations: normalOptimizations },
+      advanced: { text: advancedText, originalSize, compressedSize: advancedSize, percentage: advancedPercentage, optimizations: optimized.optimizations },
+    };
+  };
+  const updateCompressionSampling = (next: FrameSamplingSetting) => {
+    const settings = { advanced: next };
+    setCompressionSampling(settings);
+    if (compressionResult) setCompressionResult(buildCompressionResults(settings));
+  };
   const selectedVersionIndex = versions.findIndex((version) => version.id === selectedVersionId);
   const selectedVersion = selectedVersionIndex >= 0 ? versions[selectedVersionIndex] : versions[versionIndex];
   const selectedDiff = useMemo(() => {
@@ -998,30 +1283,36 @@ export default function Home() {
       const timer = window.setTimeout(() => setCompressionCountdown((current) => current === null ? null : current - 1), 1000);
       return () => window.clearTimeout(timer);
     }
-    const originalSize = new Blob([jsonText]).size; const normalText = JSON.stringify(data); const normalSize = new Blob([normalText]).size; const normalPercentage = originalSize ? Math.max(0, (1 - normalSize / originalSize) * 100) : 0;
-    const normal: CompressionResult = { text: normalText, originalSize, compressedSize: normalSize, percentage: normalPercentage, optimizations: [{ key: "whitespace", title: "移除格式空白", description: "仅删除缩进、换行与多余空格，不改变任何字段、数值或资源结构。", count: 1, examples: [`整份文件 · 减少 ${formatBytes(Math.max(0, originalSize - normalSize))}`] }] };
-    const optimized = optimizeJson(data, jsonText); const advancedSize = new Blob([optimized.text]).size; const advancedPercentage = originalSize ? Math.max(0, (1 - advancedSize / originalSize) * 100) : 0;
-    const advanced: CompressionResult = { text: optimized.text, originalSize, compressedSize: advancedSize, percentage: advancedPercentage, optimizations: optimized.optimizations };
-    setCompressionResult({ normal, advanced }); setCompressionCountdown(null); setCompressionReportOpen(true);
+    setCompressionResult(buildCompressionResults(compressionSampling)); setCompressionCountdown(null); setCompressionReportOpen(true);
     setToast(`一键压缩完成：已生成普通版和高级版`);
-  }, [compressionCountdown, data, jsonText]);
+  }, [compressionCountdown, data, jsonText, compressionSampling]);
   useEffect(() => {
-    if (!colorEditor && !shapeEditorOpen && !imageEditorOpen && !historyOpen && !compressionReportOpen) return;
+    if (!colorEditor && !shapeEditorOpen && !imageEditorOpen && !batchImageEditorOpen && !historyOpen && !compressionReportOpen) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      setColorEditor(null); setShapeEditorOpen(false); setImageEditorOpen(false); setHistoryOpen(false); setCompressionReportOpen(false);
+      setColorEditor(null); setShapeEditorOpen(false); setImageEditorOpen(false); setBatchImageEditorOpen(false); setHistoryOpen(false); setCompressionReportOpen(false);
     };
     document.body.style.overflow = "hidden"; window.addEventListener("keydown", closeOnEscape);
     return () => { document.body.style.overflow = previousOverflow; window.removeEventListener("keydown", closeOnEscape); };
-  }, [colorEditor, shapeEditorOpen, imageEditorOpen, historyOpen, compressionReportOpen]);
+  }, [colorEditor, shapeEditorOpen, imageEditorOpen, batchImageEditorOpen, historyOpen, compressionReportOpen]);
   const activeShape = shapes.find((item) => `${item.mode}:${item.name}` === selectedShape) || shapes[0];
   const activeImage = images.find((item) => item.id === selectedImage) || images[0];
+  const activeEasing = filteredEasings.find((item) => item.id === selectedEasing) || filteredEasings[0];
+  const easingEditorCurve = easingDraft || activeEasing || EASING_PRESETS[1].curve;
+  const activeEasingCount = activeEasing ? selectedMotionElement ? activeEasing.paths.filter((path) => path.startsWith(selectedMotionElement)).length : activeEasing.count : 0;
+  const selectedMotionElementInfo = motionElements.find((element) => element.id === selectedMotionElement);
+  const selectedEasingCategoryInfo = EASING_CATEGORIES.find((category) => category.id === selectedEasingCategory)!;
+  const batchMappedCount = batchImageTargets.filter((targetId) => batchUploadedImages[batchImageMappings[targetId]]).length;
   const tabMeta = activeTab === "colors"
     ? { title: "颜色", english: "COLORS", description: `识别到 ${colors.length} 种颜色，编辑窗口会保持开启。` }
     : activeTab === "shapes"
       ? { title: "组合形状", english: "GROUPS", description: "选择主文件中的组合，再上传 SVG 作为新的矢量结构。" }
-      : { title: "图片资源", english: "IMAGES", description: `识别到 ${images.length} 个图片资源，替换后保留原图层布局与动画。` };
+      : activeTab === "images"
+        ? { title: "图片资源", english: "IMAGES", description: `识别到 ${images.length} 个图片资源，替换后保留原图层布局与动画。` }
+        : easingDetailOpen
+          ? { title: `编辑${selectedEasingCategoryInfo.label}曲线`, english: "CURVE DETAIL", description: selectedMotionElementInfo ? `当前只调整「${selectedMotionElementInfo.name}」中的${selectedEasingCategoryInfo.label}关键帧。` : `当前调整所有使用这组${selectedEasingCategoryInfo.label}曲线的关键帧。` }
+          : { title: "动效曲线", english: "EASING", description: `识别到 ${easings.length} 组加速度曲线，可按动画属性和元素筛选。` };
 
   const setHistoryState = (nextVersions: EditVersion[], nextIndex: number) => {
     versionsRef.current = nextVersions; versionIndexRef.current = nextIndex; setVersions(nextVersions); setVersionIndex(nextIndex); setSelectedVersionId(nextVersions[nextIndex]?.id || "");
@@ -1037,15 +1328,15 @@ export default function Home() {
   };
   const applyHistoryIndex = (nextIndex: number, action: "undo" | "redo") => {
     const nextVersion = versionsRef.current[nextIndex]; if (!nextVersion) return;
-    versionIndexRef.current = nextIndex; setVersionIndex(nextIndex); setSelectedVersionId(nextVersion.id); setData(clone(nextVersion.data)); setInspectorTab("preview"); setToast(`${action === "undo" ? "已撤销" : "已重做"}：${nextVersion.label}`);
+    versionIndexRef.current = nextIndex; setVersionIndex(nextIndex); setSelectedVersionId(nextVersion.id); setData(clone(nextVersion.data)); setToast(`${action === "undo" ? "已撤销" : "已重做"}：${nextVersion.label}`);
   };
   const undoEdit = () => applyHistoryIndex(versionIndexRef.current - 1, "undo");
   const redoEdit = () => applyHistoryIndex(versionIndexRef.current + 1, "redo");
-  const restoreOriginal = () => { if (commitEdit(clone(originalData), "恢复原始文件")) { setInspectorTab("preview"); setToast("已恢复原始文件，可继续撤销"); } };
+  const restoreOriginal = () => { if (commitEdit(clone(originalData), "恢复原始文件")) setToast("已恢复原始文件，可继续撤销"); };
   const openHistory = () => { setSelectedVersionId(versionsRef.current[versionIndexRef.current]?.id || ""); setHistoryOpen(true); };
   const restoreSelectedVersion = () => {
     if (!selectedVersion) return; const label = selectedVersion.label;
-    if (commitEdit(clone(selectedVersion.data), `恢复版本：${label}`)) { setInspectorTab("preview"); setHistoryOpen(false); setToast(`已恢复到「${label}」`); }
+    if (commitEdit(clone(selectedVersion.data), `恢复版本：${label}`)) { setHistoryOpen(false); setToast(`已恢复到「${label}」`); }
   };
   useEffect(() => {
     if (!hasUploadedFile) return;
@@ -1060,9 +1351,9 @@ export default function Home() {
 
   const loadJsonFile = async (file: File) => {
     try {
-      const parsed = JSON.parse(await file.text()); beginDocument(parsed); setHasUploadedFile(true); setFileName(file.name); setError(""); setMediaConversion(null); setMediaConversionError(""); setSelectedShape(""); setSelectedImage(""); setUploadedSvg(null); setUploadedImage(null); setShapeEditorOpen(false); setImageEditorOpen(false); setInspectorTab("preview");
-      const foundColors = scanColors(parsed).length; const foundShapes = scanShapes(parsed).length; const foundImages = scanImages(parsed).length;
-      setToast(`识别完成：${foundColors} 种颜色，${foundShapes} 种形状，${foundImages} 个图片资源`);
+      const parsed = JSON.parse(await file.text()); const easingProfiles = scanEasings(parsed); beginDocument(parsed); setHasUploadedFile(true); setFileName(file.name); setError(""); setMediaConversion(null); setMediaConversionError(""); setSelectedShape(""); setSelectedImage(""); setSelectedEasing(""); setEasingDraft(null); setEasingDetailOpen(false); setSelectedEasingCategory(easingProfiles[0]?.category || "move"); setSelectedMotionElement(""); setUploadedSvg(null); setUploadedImage(null); setBatchUploadedImages([]); setBatchImageTargets([]); setBatchImageMappings({}); setShapeEditorOpen(false); setImageEditorOpen(false); setBatchImageEditorOpen(false);
+      const foundColors = scanColors(parsed).length; const foundShapes = scanShapes(parsed).length; const foundImages = scanImages(parsed).length; const foundEasings = easingProfiles.length;
+      setToast(`识别完成：${foundColors} 种颜色，${foundShapes} 种形状，${foundImages} 个图片资源，${foundEasings} 组动效曲线`);
     } catch { setError("无法解析这个文件，请检查 JSON 格式后重试。"); }
   };
   const dropJson = async (event: ReactDragEvent<HTMLDivElement>) => {
@@ -1084,7 +1375,7 @@ export default function Home() {
       const baseName = files.length > 1 ? "sequence-frames" : files[0].name.replace(/\.[^.]+$/, "");
       const outputName = `${baseName}-lottie.json`;
       setMediaConversion({ text, kind, fileCount: frames.length, originalSize, payloadSize, jsonSize, percentage, outputName });
-      beginDocument(lottie); setHasUploadedFile(true); setFileName(outputName); setInspectorTab("preview"); setError("");
+      beginDocument(lottie); setHasUploadedFile(true); setFileName(outputName); setSelectedEasingCategory(scanEasings(lottie)[0]?.category || "move"); setSelectedMotionElement(""); setSelectedEasing(""); setEasingDetailOpen(false); setError("");
       setToast(`转换完成：已生成 ${frames.length} 帧可播放 Lottie JSON`);
     } catch { setMediaConversionError("转换失败：请确认浏览器支持该媒体编码，或缩短视频、减少序列帧后重试。"); }
     finally { setMediaConverting(false); }
@@ -1117,7 +1408,29 @@ export default function Home() {
   const changeColor = (to: string) => {
     if (!colorEditor || !/^#[0-9A-F]{6}$/i.test(to)) return;
     const next = to.toUpperCase(); const from = colorEditor.current;
-    if (commitEdit(replaceColor(data, from, next), `替换颜色 ${from} → ${next}`)) { setColorEditor({ ...colorEditor, current: next, draft: next }); setInspectorTab("preview"); setToast(`已替换 ${from} 的全部引用`); }
+    if (commitEdit(replaceColor(data, from, next), `替换颜色 ${from} → ${next}`)) { setColorEditor({ ...colorEditor, current: next, draft: next }); setToast(`已替换 ${from} 的全部引用`); }
+  };
+  const openEasingList = () => {
+    const availableCategory = easingCategoryCounts[selectedEasingCategory] ? selectedEasingCategory : easings[0]?.category || "move";
+    setActiveTab("easing"); setSelectedEasingCategory(availableCategory); setEasingDetailOpen(false); setSelectedEasing(""); setEasingDraft(null);
+  };
+  const selectEasingCategory = (category: MotionCategory) => {
+    setSelectedEasingCategory(category); setSelectedEasing(""); setEasingDraft(null); setEasingDetailOpen(false);
+  };
+  const selectMotionElementFilter = (elementId: string) => {
+    setSelectedMotionElement(elementId); setSelectedEasing(""); setEasingDraft(null); setEasingDetailOpen(false);
+  };
+  const selectEasingProfile = (profile: EasingInfo) => {
+    setSelectedEasing(profile.id); setEasingDraft({ outX: profile.outX, outY: profile.outY, inX: profile.inX, inY: profile.inY }); setEasingDetailOpen(true);
+  };
+  const applyEasingCurve = (curve: EasingCurve, label = "自定义") => {
+    if (!activeEasing) return;
+    const normalized = Object.fromEntries(Object.entries(curve).map(([key, value]) => [key, Math.max(0, Math.min(1, Number(value.toFixed(2))))])) as EasingCurve;
+    const scopeLabel = selectedMotionElementInfo ? `「${selectedMotionElementInfo.name}」` : "全部关联元素";
+    const targetPaths = new Set(selectedMotionElement ? activeEasing.paths.filter((path) => path.startsWith(selectedMotionElement)) : activeEasing.paths);
+    if (commitEdit(replaceEasing(data, activeEasing, normalized, targetPaths), `调整${scopeLabel}${selectedEasingCategoryInfo.label}曲线「${label}」`)) {
+      setSelectedEasing(`${activeEasing.category}:${easingSignature(normalized)}`); setEasingDraft(normalized); setToast(`已更新 ${activeEasingCount} 个${selectedEasingCategoryInfo.label}关键帧，应用范围：${scopeLabel}`);
+    }
   };
   const loadImageReplacement = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; if (!file) return;
@@ -1129,7 +1442,40 @@ export default function Home() {
   };
   const changeImage = (target: ImageInfo) => {
     if (!uploadedImage) return;
-    if (commitEdit(replaceImageResource(data, target, uploadedImage.dataUrl), `替换图片「${target.name}」`)) { setInspectorTab("preview"); setImageError(""); setToast(`已替换 ${target.count} 个「${target.name}」图片引用`); }
+    if (commitEdit(replaceImageResource(data, target, uploadedImage.dataUrl), `替换图片「${target.name}」`)) { setImageError(""); setToast(`已替换 ${target.count} 个「${target.name}」图片引用`); }
+  };
+  const openBatchImageEditor = () => {
+    setBatchImageTargets(images.map((item) => item.id)); setBatchUploadedImages([]); setBatchImageMappings({}); setImageError(""); setBatchImageEditorOpen(true);
+  };
+  const loadBatchImageReplacements = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = [...(event.target.files || [])]; event.target.value = ""; if (!files.length) return;
+    try {
+      if (!files.every((file) => /^image\/(png|jpeg|webp|gif)$/i.test(file.type))) throw new Error("UNSUPPORTED_IMAGE");
+      const loaded = await Promise.all(files.map(readImageFile));
+      const normalizeName = (value: string) => value.split("/").pop()?.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "") || "";
+      const mappings: Record<string, number> = {};
+      images.forEach((target, targetIndex) => {
+        const targetNames = [target.name, target.value].map(normalizeName).filter(Boolean);
+        const matched = loaded.findIndex((item) => targetNames.includes(normalizeName(item.fileName)));
+        mappings[target.id] = matched >= 0 ? matched : loaded.length === 1 ? 0 : targetIndex < loaded.length ? targetIndex : -1;
+      });
+      setBatchUploadedImages(loaded); setBatchImageMappings(mappings); setImageError(""); setToast(`已读取 ${loaded.length} 张图片，请核对替换关系`);
+    } catch { setImageError("批量上传仅支持 PNG、JPG、WebP 或 GIF 文件。"); }
+  };
+  const toggleBatchImageTarget = (targetId: string) => {
+    setBatchImageTargets((current) => current.includes(targetId) ? current.filter((id) => id !== targetId) : [...current, targetId]);
+  };
+  const applyBatchImageReplacement = () => {
+    const replacements = batchImageTargets.flatMap((targetId) => {
+      const target = images.find((item) => item.id === targetId); const replacement = batchUploadedImages[batchImageMappings[targetId]];
+      return target && replacement ? [{ target, replacement }] : [];
+    });
+    if (!replacements.length) { setImageError("请至少选择一个图片资源并为它指定新图片。"); return; }
+    const nextData = replacements.reduce<unknown>((current, item) => replaceImageResource(current, item.target, item.replacement.dataUrl), data);
+    const referenceCount = replacements.reduce((sum, item) => sum + item.target.count, 0);
+    if (commitEdit(nextData, `批量替换 ${replacements.length} 个图片资源`)) {
+      setImageError(""); setBatchImageEditorOpen(false); setToast(`已批量替换 ${replacements.length} 个资源，共 ${referenceCount} 个引用`);
+    }
   };
   const changeShapeFromUpload = (from: ShapeInfo) => {
     if (!uploadedSvg) return;
@@ -1138,7 +1484,7 @@ export default function Home() {
     const template = from.mode === "lottie-group" ? group : from.mode === "lottie-layer"
       ? { ty: 4, nm: from.name, shapes: [group], ks: {}, ip: 0, op: 1, st: 0, __jsonableSvg: true }
       : { name: from.name, componentName: from.name, type: "svg", svg: uploadedSvg.raw, items: [group], __jsonableSvg: true };
-    if (commitEdit(replaceShape(data, from, from.name, template), `替换形状「${from.name}」`)) { setInspectorTab("preview"); setReplacementError(""); setToast(`已使用 ${uploadedSvg.fileName} 替换 ${from.count} 个「${from.name}」`); }
+    if (commitEdit(replaceShape(data, from, from.name, template), `替换形状「${from.name}」`)) { setReplacementError(""); setToast(`已使用 ${uploadedSvg.fileName} 替换 ${from.count} 个「${from.name}」`); }
   };
   const download = () => { const blob = new Blob([jsonText], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = fileName.replace(/\.json$/i, "") + "-edited.json"; a.click(); URL.revokeObjectURL(url); setToast("修改后的 JSON 已下载"); };
   const downloadCompressed = (mode: "normal" | "advanced") => {
@@ -1167,7 +1513,7 @@ export default function Home() {
     a.href = url; a.download = `${baseName}-optimized.lottie`; a.click(); URL.revokeObjectURL(url); setToast("dotLottie 文件已导出");
   };
   const goHome = () => {
-    setData(SAMPLE); setOriginalData(SAMPLE); setHasUploadedFile(false); setFileName("summer-campaign.json"); setActiveTab("colors"); setInspectorTab("preview"); setSelectedShape(""); setSelectedImage(""); setUploadedSvg(null); setUploadedImage(null); setColorEditor(null); setShapeEditorOpen(false); setImageEditorOpen(false); setHistoryOpen(false); setCompressionReportOpen(false); setCompressionCountdown(null); setCompressionResult(null); setMediaConversion(null); setMediaConversionError(""); setError(""); setLandingStep(0); setLandingCycle((current) => current + 1);
+    setData(SAMPLE); setOriginalData(SAMPLE); setHasUploadedFile(false); setFileName("summer-campaign.json"); setActiveTab("colors"); setSelectedShape(""); setSelectedImage(""); setSelectedEasing(""); setEasingDraft(null); setEasingDetailOpen(false); setSelectedEasingCategory("move"); setSelectedMotionElement(""); setUploadedSvg(null); setUploadedImage(null); setBatchUploadedImages([]); setBatchImageTargets([]); setBatchImageMappings({}); setColorEditor(null); setShapeEditorOpen(false); setImageEditorOpen(false); setBatchImageEditorOpen(false); setHistoryOpen(false); setCompressionReportOpen(false); setCompressionCountdown(null); setCompressionResult(null); setCompressionSampling({ advanced: { enabled: false, method: "half", selectedFrames: [] } }); setMediaConversion(null); setMediaConversionError(""); setError(""); setLandingStep(0); setLandingCycle((current) => current + 1);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
   return <main>
@@ -1186,26 +1532,28 @@ export default function Home() {
     </section> : <section className="editor-context"><div className="file-summary"><span className="eyebrow">NOW EDITING</span><strong>{fileName}</strong><small>{isLottie(data) ? "可播放 Lottie" : "JSON 视觉结构"} · {formatBytes(new Blob([jsonText]).size)} · 仅保留在当前会话</small></div><div className="history-actions"><button onClick={undoEdit} disabled={versionIndex <= 0} title="撤销（⌘/Ctrl + Z）">撤销</button><button onClick={redoEdit} disabled={versionIndex < 0 || versionIndex >= versions.length - 1} title="重做（⌘/Ctrl + Shift + Z）">重做</button><button onClick={restoreOriginal} disabled={versionIndex === 0}>恢复原始</button><button className="history-button" onClick={openHistory}>修改记录 <b>{Math.max(0, versions.length - 1)}</b></button>{compressionResult && <button className="history-button optimization-report-button" onClick={() => setCompressionReportOpen(true)}>压缩结果 <b>2</b></button>}</div></section>}
     {error && <div className="error" role="alert">{error}</div>}
     {hasUploadedFile && <section className="workspace">
-      <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、组合矢量和图片资源的本地批量替换。</p></div></aside>
-      <section className="editor-panel"><div className="resource-tabs" role="tablist" aria-label="可替换资源"><button role="tab" aria-selected={activeTab === "colors"} className={activeTab === "colors" ? "active" : ""} onClick={() => setActiveTab("colors")}><span>颜色</span><small>COLORS</small><b>{colors.length}</b></button><button role="tab" aria-selected={activeTab === "shapes"} className={activeTab === "shapes" ? "active" : ""} onClick={() => setActiveTab("shapes")}><span>组合形状</span><small>GROUPS</small><b>{shapes.length}</b></button><button role="tab" aria-selected={activeTab === "images"} className={activeTab === "images" ? "active" : ""} onClick={() => setActiveTab("images")}><span>图片资源</span><small>IMAGES</small><b>{images.length}</b></button></div><div className="section-head"><div><h2>{tabMeta.title}</h2><span className="en">{tabMeta.english}</span></div><p>{tabMeta.description}</p></div>
+      <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><button className={activeTab === "easing" ? "rail-item active" : "rail-item"} onClick={openEasingList}><span className="rail-icon">⌁</span><span>动效曲线<small>Easing</small></span><b>{easings.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、组合矢量、图片资源和关键帧加速度的本地编辑。</p></div></aside>
+      <section className="editor-panel"><div className="resource-tabs" role="tablist" aria-label="可替换资源"><button role="tab" aria-selected={activeTab === "colors"} className={activeTab === "colors" ? "active" : ""} onClick={() => setActiveTab("colors")}><span>颜色</span><small>COLORS</small><b>{colors.length}</b></button><button role="tab" aria-selected={activeTab === "shapes"} className={activeTab === "shapes" ? "active" : ""} onClick={() => setActiveTab("shapes")}><span>组合形状</span><small>GROUPS</small><b>{shapes.length}</b></button><button role="tab" aria-selected={activeTab === "images"} className={activeTab === "images" ? "active" : ""} onClick={() => setActiveTab("images")}><span>图片资源</span><small>IMAGES</small><b>{images.length}</b></button><button role="tab" aria-selected={activeTab === "easing"} className={activeTab === "easing" ? "active" : ""} onClick={openEasingList}><span>动效曲线</span><small>EASING</small><b>{easings.length}</b></button></div><div className="section-head"><div><h2>{tabMeta.title}</h2><span className="en">{tabMeta.english}</span></div><div className="section-head-side"><p>{tabMeta.description}</p>{activeTab === "images" && <button className="batch-replace-trigger" onClick={openBatchImageEditor} disabled={!images.length}>批量替换图片</button>}</div></div>
         {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><button className="picker-button" onClick={() => setColorEditor({ current: color.hex, draft: color.hex, count: color.count })}><span className="picker-chip" style={{ background: color.hex }} />选择颜色</button></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> : activeTab === "shapes" ?
-        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => { setSelectedShape(id); setUploadedSvg(null); setReplacementError(""); setShapeEditorOpen(true); }}><ShapeThumb data={data} shape={shape} /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div></div> :
-        <div className="image-workbench"><div className="image-list">{images.map((item) => <button key={item.id} className={activeImage?.id === item.id ? "image-row selected" : "image-row"} onClick={() => { setSelectedImage(item.id); setUploadedImage(null); setImageError(""); setImageEditorOpen(true); }}><span className="image-thumb"><ImageThumb source={item.preview} label={item.name} /></span><span><strong>{item.name}</strong><small>{item.mode === "lottie-asset" ? "Lottie 图片资源" : item.key}</small></span><b>× {item.count}</b></button>)}{!images.length && <Empty text="暂未识别到图片资源；支持 Lottie assets 和常见图片地址字段" />}</div></div>}
+        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => { setSelectedShape(id); setUploadedSvg(null); setReplacementError(""); setShapeEditorOpen(true); }}><ShapeThumb data={data} shape={shape} /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div></div> : activeTab === "images" ?
+        <div className="image-workbench"><div className="image-list">{images.map((item) => <button key={item.id} className={activeImage?.id === item.id ? "image-row selected" : "image-row"} onClick={() => { setSelectedImage(item.id); setUploadedImage(null); setImageError(""); setImageEditorOpen(true); }}><span className="image-thumb"><ImageThumb source={item.preview} label={item.name} /></span><span><strong>{item.name}</strong><small>{item.mode === "lottie-asset" ? "Lottie 图片资源" : item.key}</small></span><b>× {item.count}</b></button>)}{!images.length && <Empty text="暂未识别到图片资源；支持 Lottie assets 和常见图片地址字段" />}</div></div> :
+        <div className={easingDetailOpen ? "easing-workbench detail" : "easing-workbench"}>{easings.length ? easingDetailOpen && activeEasing ? <div className="easing-detail"><div className="easing-detail-nav"><button className="easing-back" onClick={() => { setEasingDetailOpen(false); setSelectedEasing(""); setEasingDraft(null); }}>返回曲线列表</button><span>{selectedEasingCategoryInfo.label} / {selectedEasingCategoryInfo.english}</span></div><div className="easing-scope"><span>应用位置</span><strong>{selectedMotionElementInfo ? selectedMotionElementInfo.name : `${activeEasing.elements.length || 1} 个关联元素`}</strong><div>{(selectedMotionElementInfo ? [selectedMotionElementInfo] : activeEasing.elements).map((element) => <button key={element.id} onClick={() => selectMotionElementFilter(element.id)}>{element.name}</button>)}</div></div><div className="easing-editor"><div className="easing-editor-preview"><EasingPreview curve={easingEditorCurve} /><div><small>CUBIC BEZIER</small><strong>{easingEditorCurve.outX.toFixed(2)}, {easingEditorCurve.outY.toFixed(2)}, {easingEditorCurve.inX.toFixed(2)}, {easingEditorCurve.inY.toFixed(2)}</strong><span>本次将修改 {activeEasingCount} 个{selectedEasingCategoryInfo.label}关键帧</span><code className="easing-source-path">{selectedMotionElement ? activeEasing.paths.find((path) => path.startsWith(selectedMotionElement)) || activeEasing.paths[0] : activeEasing.paths[0]}</code></div></div><div className="easing-presets">{EASING_PRESETS.map((preset) => <button key={preset.name} onClick={() => setEasingDraft(preset.curve)}>{preset.name}</button>)}</div><div className="easing-controls">{(["outX", "outY", "inX", "inY"] as const).map((key) => <label key={key}><span>{key === "outX" ? "出点 X" : key === "outY" ? "出点 Y" : key === "inX" ? "入点 X" : "入点 Y"}<output>{easingEditorCurve[key].toFixed(2)}</output></span><input type="range" min="0" max="1" step=".01" value={easingEditorCurve[key]} onChange={(event) => setEasingDraft({ ...easingEditorCurve, [key]: Number(event.target.value) })} /></label>)}</div><button className="apply-easing" onClick={() => applyEasingCurve(easingEditorCurve)}>应用到{selectedMotionElementInfo ? `「${selectedMotionElementInfo.name}」` : "全部关联元素"}</button><p>预设只更新当前草稿，点击“应用到”按钮后才会写入 JSON。</p></div></div> : <><div className="easing-categories" role="tablist" aria-label="动效属性分类">{EASING_CATEGORIES.map((category) => <button key={category.id} type="button" role="tab" aria-selected={selectedEasingCategory === category.id} className={selectedEasingCategory === category.id ? "active" : ""} onClick={() => selectEasingCategory(category.id)}><span>{category.label}<small>{category.english}</small></span><b>{easingCategoryCounts[category.id]}</b></button>)}</div><div className="easing-filter"><label htmlFor="motion-element-filter">按元素筛选</label><select id="motion-element-filter" value={selectedMotionElement} onChange={(event) => selectMotionElementFilter(event.target.value)}><option value="">全部动画元素</option>{motionElements.map((element) => <option key={element.id} value={element.id}>{element.name}</option>)}</select><span>{filteredEasings.length} 组关联曲线</span></div>{filteredEasings.length ? <div className="easing-profile-list">{filteredEasings.map((profile, index) => { const profileCount = selectedMotionElement ? profile.paths.filter((path) => path.startsWith(selectedMotionElement)).length : profile.count; return <button key={profile.id} className="easing-profile" onClick={() => selectEasingProfile(profile)}><EasingPreview curve={profile} compact /><span><strong>{selectedEasingCategoryInfo.label}曲线 {String(index + 1).padStart(2, "0")}</strong><small>{profileCount} 个关键帧 / {profile.elements.length || 1} 个元素</small></span><code>{profile.outX.toFixed(2)}, {profile.outY.toFixed(2)}, {profile.inX.toFixed(2)}, {profile.inY.toFixed(2)}</code></button>; })}</div> : <Empty text={`当前筛选中没有可编辑的${selectedEasingCategoryInfo.label}曲线`} />}</> : <Empty text="没有识别到可编辑的 Lottie 贝塞尔关键帧曲线" />}</div>}
       </section>
       <aside className="json-panel">
-        <div className="panel-tabs"><button className={inspectorTab === "preview" ? "active" : ""} onClick={() => setInspectorTab("preview")}><span className="status-dot" />视觉预览</button><button className={inspectorTab === "json" ? "active" : ""} onClick={() => setInspectorTab("json")}>实时 JSON</button></div>
-        {inspectorTab === "preview" ? <div className={isDraggingJson ? "preview-panel is-dragging" : "preview-panel"} onDragEnter={(event) => { event.preventDefault(); setIsDraggingJson(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDraggingJson(false); }} onDrop={dropJson}>
-          <div className="preview-head"><span>{!hasUploadedFile ? "JSONABLE CUBE" : isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS · {shapes.length} SHAPES · {images.length} IMAGES</b></div>
+        <div className="preview-title"><span className="status-dot" />视觉预览</div>
+        <div className={isDraggingJson ? "preview-panel is-dragging" : "preview-panel"} onDragEnter={(event) => { event.preventDefault(); setIsDraggingJson(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDraggingJson(false); }} onDrop={dropJson}>
+          <div className="preview-head"><span>{!hasUploadedFile ? "JSONABLE CUBE" : isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS / {shapes.length} SHAPES / {images.length} IMAGES / {easings.length} CURVES</b></div>
           <VisualPreview data={data} colors={colors} shapes={shapes} images={images} isDefault={!hasUploadedFile} />
-          <div className="preview-foot">{hasUploadedFile ? "修改颜色、形状或图片后自动刷新 · 也可拖入新的 JSON" : "拖入 JSON 到预览框，或使用顶部上传按钮"}</div>
+          <div className="preview-foot">{hasUploadedFile ? "修改颜色、形状、图片或动效曲线后自动刷新" : "拖入 JSON 到预览框，或使用顶部上传按钮"}</div>
           {isDraggingJson && <div className="drop-overlay"><span>↓</span><strong>松开即可载入 JSON</strong><small>文件只在本地浏览器中处理</small></div>}
-        </div> : <><div className="json-head"><div><span className="status-dot" /> 已同步</div><button onClick={() => navigator.clipboard.writeText(jsonText).then(() => setToast("JSON 已复制"))}>复制</button></div><pre>{jsonText.split("\n").map((line, i) => <code key={i}><span>{String(i + 1).padStart(2, "0")}</span>{line}</code>)}</pre><div className="json-foot"><span>{jsonText.split("\n").length} 行</span><span>UTF-8</span></div></>}
+        </div>
       </aside>
     </section>}
-    {compressionReportOpen && compressionResult && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="一键压缩结果"><div className="color-dialog compression-dialog comparison"><header><div><span className="eyebrow">ONE-CLICK COMPRESSION</span><h3>两种压缩结果</h3></div><button onClick={() => setCompressionReportOpen(false)} aria-label="关闭压缩结果">×</button></header><div className="compression-result-windows"><CompressionResultWindow mode="normal" result={compressionResult.normal} onDownload={() => downloadCompressed("normal")} /><CompressionResultWindow mode="advanced" result={compressionResult.advanced} onDownload={() => downloadCompressed("advanced")} onDotLottie={isLottie(data) ? downloadDotLottie : undefined} /></div><footer className="compression-footer compression-footer-note"><span>普通压缩不改变任何字段；高级压缩采用保真优先的结构优化策略。Lottie 文件可直接导出标准 dotLottie。</span></footer></div></div>}
+    {compressionReportOpen && compressionResult && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="一键压缩结果"><div className="color-dialog compression-dialog comparison"><header><div><span className="eyebrow">ONE-CLICK COMPRESSION</span><h3>两种压缩结果</h3></div><button onClick={() => setCompressionReportOpen(false)} aria-label="关闭压缩结果">×</button></header><div className="compression-sampling-shortcuts"><label><input type="checkbox" checked={compressionSampling.advanced.enabled} disabled={!sequenceSamplingAvailable} onChange={(event) => updateCompressionSampling({ ...compressionSampling.advanced, enabled: event.target.checked })} /><span><strong>高级压缩抽帧</strong><small>只减少序列图片，保留原始帧率与时长</small></span></label></div><div className="compression-result-windows"><CompressionResultWindow mode="normal" result={compressionResult.normal} onDownload={() => downloadCompressed("normal")} /><CompressionResultWindow mode="advanced" result={compressionResult.advanced} sampling={compressionSampling.advanced} frames={sequenceFrameInspection.frames} onSamplingChange={updateCompressionSampling} onDownload={() => downloadCompressed("advanced")} onDotLottie={isLottie(data) ? downloadDotLottie : undefined} /></div><footer className="compression-footer compression-footer-note"><span>普通压缩仅移除格式空白，不提供抽帧。高级压缩可选抽帧，且不会修改 JSON 原始 fr、ip、op 和总时长。</span></footer></div></div>}
     {historyOpen && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="修改记录"><div className="color-dialog history-dialog"><header><div><span className="eyebrow">VERSION HISTORY</span><h3>修改记录</h3></div><button onClick={() => setHistoryOpen(false)} aria-label="关闭修改记录">×</button></header><div className="history-dialog-body"><aside className="version-list">{versions.map((version, index) => ({ version, index })).reverse().map(({ version, index }) => <button key={version.id} className={selectedVersion?.id === version.id ? "active" : ""} onClick={() => setSelectedVersionId(version.id)}><span><strong>{version.label}</strong><small>{new Date(version.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></span><b>{index === versionIndex ? "当前" : String(index).padStart(2, "0")}</b></button>)}</aside><section className="history-diff"><div className="history-diff-head"><div><span>版本差异</span><strong>{selectedVersion?.label || "请选择一个版本"}</strong></div><button onClick={restoreSelectedVersion} disabled={!selectedVersion || selectedVersion.id === versions[versionIndex]?.id}>恢复到此版本</button></div>{selectedVersionIndex <= 0 ? <div className="history-empty"><strong>这是原始文件</strong><p>后续的颜色、形状与图片修改都会记录在这里。</p></div> : selectedDiff.length ? <div className="diff-list">{selectedDiff.map((item, index) => <article key={`${item.path}-${index}`}><code>{item.path}</code><div><span><small>修改前</small>{item.before}</span><span><small>修改后</small>{item.after}</span></div></article>)}{selectedDiff.length >= 80 && <p className="diff-limit">仅展示前 80 处变化</p>}</div> : <div className="history-empty"><strong>没有检测到字段变化</strong><p>这个版本与前一个版本内容一致。</p></div>}</section></div><footer><span>修改记录仅保留在当前页面会话，刷新或关闭后清空</span><button onClick={() => setHistoryOpen(false)}>关闭</button></footer></div></div>}
-    {colorEditor && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="颜色编辑器"><div className="color-dialog"><header><div><span className="eyebrow">COLOR EDITOR</span><h3>替换颜色</h3></div><button onClick={() => setColorEditor(null)} aria-label="关闭颜色编辑器">×</button></header><div className="color-dialog-main"><label className="large-picker" style={{ background: colorEditor.current }}><input type="color" value={colorEditor.current} onChange={(event) => changeColor(event.target.value)} /><span>点击选择色彩</span></label><div className="color-values"><label>HEX 色值</label><div><input value={colorEditor.draft} onChange={(event) => setColorEditor({ ...colorEditor, draft: event.target.value.toUpperCase() })} /><button onClick={() => changeColor(colorEditor.draft)}>应用</button></div><small>将同步修改 {colorEditor.count} 个引用，窗口不会自动关闭。</small></div></div><div className="quick-colors">{["#101513", "#E8F0ED", "#48C5A1", "#2A6F5C", "#E66E58", "#5E8DA0"].map((hex) => <button key={hex} style={{ background: hex }} onClick={() => changeColor(hex)} aria-label={`选择 ${hex}`} />)}</div><footer><span>修改已实时写入预览和 JSON</span><button onClick={() => setColorEditor(null)}>关闭</button></footer></div></div>}
+    {colorEditor && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="颜色编辑器"><div className="color-dialog"><header><div><span className="eyebrow">COLOR EDITOR</span><h3>替换颜色</h3></div><button onClick={() => setColorEditor(null)} aria-label="关闭颜色编辑器">×</button></header><div className="color-dialog-main"><label className="large-picker" style={{ background: colorEditor.current }}><input type="color" value={colorEditor.current} onChange={(event) => changeColor(event.target.value)} /><span>点击选择色彩</span></label><div className="color-values"><label>HEX 色值</label><div><input value={colorEditor.draft} onChange={(event) => setColorEditor({ ...colorEditor, draft: event.target.value.toUpperCase() })} /><button onClick={() => changeColor(colorEditor.draft)}>应用</button></div><small>将同步修改 {colorEditor.count} 个引用，窗口不会自动关闭。</small></div></div><div className="quick-colors">{["#101513", "#E8F0ED", "#54D2AE", "#2A6F5C", "#E66E58", "#5E8DA0"].map((hex) => <button key={hex} style={{ background: hex }} onClick={() => changeColor(hex)} aria-label={`选择 ${hex}`} />)}</div><footer><span>修改已实时写入预览和 JSON</span><button onClick={() => setColorEditor(null)}>关闭</button></footer></div></div>}
     {shapeEditorOpen && activeShape && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label={`替换形状 ${activeShape.name}`}><div className="color-dialog asset-dialog"><header><div><span className="eyebrow">SVG REPLACEMENT</span><h3>替换「{activeShape.name}」</h3></div><button onClick={() => setShapeEditorOpen(false)} aria-label="关闭形状替换窗口">×</button></header><div className="asset-dialog-body"><div className="replace-card"><div className="composed-current"><ShapeThumb data={data} shape={activeShape} /><span><small>主文件中的目标</small><strong>{activeShape.name}</strong></span><b>{activeShape.count} 个实例</b></div><button className="replacement-upload" onClick={() => replacementFileRef.current?.click()}>{uploadedSvg ? <img className="replacement-svg-preview" src={uploadedSvg.preview} alt="上传的 SVG 预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedSvg ? "已转换为矢量路径" : "上传替换形状"}</small><strong>{uploadedSvg?.fileName || "选择 SVG 文件"}</strong></span><b>{uploadedSvg ? "重新上传" : "选择文件"}</b></button><input ref={replacementFileRef} type="file" accept="image/svg+xml,.svg" onChange={loadReplacementFile} hidden />{replacementError && <div className="replacement-error" role="alert">{replacementError}</div>}{uploadedSvg && <><div className="replacement-summary"><span>已转换的矢量部分</span><b>{uploadedSvg.partCount}</b></div><button className="apply-replacement" onClick={() => changeShapeFromUpload(activeShape)} disabled={activeShape.mode === "reference"}>使用这个 SVG 替换全部同名形状</button>{activeShape.mode === "reference" && <div className="replacement-empty">当前目标是外部引用，不能直接写入 SVG 路径。</div>}</>}<p>SVG 会转换为 JSON 内的矢量路径，同时保留同名实例的位置、缩放和动画变换。</p></div></div><footer><span>文件仅在本地浏览器中处理</span><button onClick={() => setShapeEditorOpen(false)}>关闭</button></footer></div></div>}
+    {batchImageEditorOpen && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label="批量替换图片素材"><div className="color-dialog batch-image-dialog"><header><div><span className="eyebrow">BATCH IMAGE REPLACEMENT</span><h3>批量替换图片素材</h3></div><button onClick={() => setBatchImageEditorOpen(false)} aria-label="关闭批量替换窗口">×</button></header><div className="batch-image-body"><div className="batch-image-toolbar"><div><strong>{batchImageTargets.length} 个目标</strong><small>已上传 {batchUploadedImages.length} 张新图片，完成 {batchMappedCount} 组映射</small></div><button onClick={() => batchImageFileRef.current?.click()}>{batchUploadedImages.length ? "重新上传图片" : "批量上传图片"}</button><input ref={batchImageFileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={loadBatchImageReplacements} hidden /></div>{imageError && <div className="replacement-error" role="alert">{imageError}</div>}<div className="batch-mapping-list">{images.map((item) => { const checked = batchImageTargets.includes(item.id); const mappedIndex = batchImageMappings[item.id] ?? -1; return <article key={item.id} className={checked ? "batch-mapping-row selected" : "batch-mapping-row"}><label className="batch-target"><input type="checkbox" checked={checked} onChange={() => toggleBatchImageTarget(item.id)} /><span className="image-thumb"><ImageThumb source={item.preview} label={item.name} /></span><span><strong>{item.name}</strong><small>{item.count} 个引用</small></span></label><span className="batch-arrow" aria-hidden="true">→</span><select value={mappedIndex} onChange={(event) => setBatchImageMappings((current) => ({ ...current, [item.id]: Number(event.target.value) }))} disabled={!checked || !batchUploadedImages.length} aria-label={`为 ${item.name} 选择替换图片`}><option value={-1}>选择新图片</option>{batchUploadedImages.map((replacement, index) => <option key={`${replacement.fileName}-${index}`} value={index}>{replacement.fileName}</option>)}</select></article>; })}</div><p className="batch-image-note">同名文件会自动匹配，其余图片按上传顺序对应。确认前可以逐项调整，也可以取消不需要替换的资源。</p></div><footer><span>所有图片仅在本地读取并内嵌到 JSON</span><div><button className="batch-secondary" onClick={() => setBatchImageEditorOpen(false)}>取消</button><button className="batch-primary" onClick={applyBatchImageReplacement} disabled={!batchMappedCount}>替换 {batchMappedCount} 个资源</button></div></footer></div></div>}
     {imageEditorOpen && activeImage && <div className="color-dialog-layer" role="dialog" aria-modal="true" aria-label={`替换图片 ${activeImage.name}`}><div className="color-dialog asset-dialog"><header><div><span className="eyebrow">IMAGE REPLACEMENT</span><h3>替换「{activeImage.name}」</h3></div><button onClick={() => setImageEditorOpen(false)} aria-label="关闭图片替换窗口">×</button></header><div className="asset-dialog-body"><div className="replace-card image-replace-card"><div className="current-image"><span className="current-image-preview"><ImageThumb source={activeImage.preview} label={activeImage.name} /></span><span><small>当前资源</small><strong>{activeImage.name}</strong><em>{activeImage.count} 个引用</em></span></div><button className="replacement-upload image-upload" onClick={() => imageFileRef.current?.click()}>{uploadedImage ? <img className="replacement-svg-preview" src={uploadedImage.dataUrl} alt="新图片预览" /> : <span className="replacement-upload-icon">＋</span>}<span><small>{uploadedImage ? `${uploadedImage.width} × ${uploadedImage.height}` : "上传新图片"}</small><strong>{uploadedImage?.fileName || "选择 PNG、JPG、WebP 或 GIF"}</strong></span><b>{uploadedImage ? "重新上传" : "选择文件"}</b></button><input ref={imageFileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={loadImageReplacement} hidden />{imageError && <div className="replacement-error" role="alert">{imageError}</div>}{uploadedImage && <button className="apply-replacement" onClick={() => changeImage(activeImage)}>使用这张图片替换全部引用</button>}<p>新图片会内嵌写入 JSON，原图层的位置、尺寸、透明度和动画保持不变。</p></div></div><footer><span>文件不会上传到服务器</span><button onClick={() => setImageEditorOpen(false)}>关闭</button></footer></div></div>}
     {toast && <div className="toast" aria-live="polite"><span>✓</span>{toast}</div>}
   </main>;

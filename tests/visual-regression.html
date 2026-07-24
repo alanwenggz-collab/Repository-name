@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Jsonable visual regression</title>
+  <link rel="stylesheet" href="../app/globals.css">
+  <style>
+    body{background:#080b0a;padding:24px}
+    .test-controls{display:flex;gap:8px;margin-bottom:16px}
+    .test-controls button{border:1px solid #54d2ae;background:#151b19;color:#e8f0ed;padding:10px 16px}
+    .landing-guide-visual{width:620px;border:1px solid #29352f;background:#101513}
+    .compression-dialog.comparison{position:relative;display:flex;flex-direction:column;margin-top:24px}
+    .compression-result-windows{display:grid}
+    .compression-result-window{height:570px}
+  </style>
+</head>
+<body>
+  <div class="test-controls">
+    <button id="step-2" type="button">02 预览与代码</button>
+    <button id="step-3" type="button">03 修改元素</button>
+  </div>
+  <div class="landing-guide-visual sequence-visual">
+    <div id="sequence" class="landing-cube-sequence sequence-step-1">
+      <div class="sequence-rig-fade">
+        <div class="sequence-rig">
+          <div class="sequence-model">
+            <div id="cubies" class="cube-model cube-model-horizontal"></div>
+          </div>
+        </div>
+      </div>
+      <div class="scatter-fade"><div id="scatters" class="scatter-field"></div></div>
+    </div>
+  </div>
+  <div class="color-dialog compression-dialog comparison">
+    <header><div><span class="eyebrow">ONE-CLICK COMPRESSION</span><h3>自定义抽帧可见性验收</h3></div></header>
+    <div class="compression-result-windows">
+      <section class="compression-result-window advanced">
+        <div class="result-window-head"><div><span>ADVANCED OPTIMIZATION</span><h4>高级压缩<b>PRO</b></h4></div><strong>-42.0%</strong></div>
+        <div class="frame-sampling-title"><div><strong>高级压缩抽帧</strong><small>自定义选择具体帧</small></div><span>可选</span></div>
+        <div class="frame-picker">
+          <div class="frame-picker-toolbar"><span>已保留 12 / 24 张图片</span><div><button>全选</button><button>隔帧</button><button>反选</button><button>仅首帧</button><button class="frame-picker-done">完成选帧</button></div></div>
+          <div id="frame-grid" class="frame-picker-grid"></div>
+        </div>
+        <div class="result-work-list"><div><span>完成的处理</span><b>24 处</b></div><article><span>24</span><div><strong>序列图片抽取</strong><p>原始帧率与时长保持不变。</p></div></article></div>
+        <div class="result-downloads" data-testid="advanced-download-actions"><button class="result-download" data-testid="advanced-download-json"><span>确认并下载 JSON</span></button><button class="result-download dotlottie"><span>导出 dotLottie</span></button></div>
+      </section>
+    </div>
+  </div>
+  <script>
+    const faces=["front","back","right","left","top","bottom"];
+    const cubies=document.querySelector("#cubies");
+    for(let x=-1;x<=1;x++)for(let y=-1;y<=1;y++)for(let z=-1;z<=1;z++){
+      const cubie=document.createElement("div");
+      cubie.className=`twist-cubie tone-${Math.abs(x+y+z)%4}`;
+      cubie.style.setProperty("--tx",`${x*38-17}px`);
+      cubie.style.setProperty("--ty",`${y*38-17}px`);
+      cubie.style.setProperty("--tz",`${z*38}px`);
+      faces.forEach(face=>{const node=document.createElement("span");node.className=`cubie-face cubie-${face} painted`;cubie.append(node)});
+      cubies.append(cubie);
+    }
+    const positions=[[-92,-54,6],[-6,-72,18],[84,-48,-4],[-108,10,-10],[-8,0,22],[100,12,8],[-78,76,10],[10,70,-4],[90,66,18]];
+    const scatters=document.querySelector("#scatters");
+    positions.forEach(([x,y,z],index)=>{
+      const cube=document.createElement("div");cube.className="scatter-cube";
+      cube.style.cssText=`--scatter-x:${x}px;--scatter-y:${y}px;--scatter-z:${z}px;--scatter-color:${["#54d2ae","#79e1c2","#dfe9e5","#268f72"][index%4]};--scatter-delay:${index*55}ms`;
+      faces.forEach(face=>{const node=document.createElement("span");node.className=`scatter-face scatter-${face}`;cube.append(node)});
+      scatters.append(cube);
+    });
+    for(let index=0;index<24;index++){const frame=document.createElement("button");frame.className=index%2===0?"selected":"";frame.innerHTML=`<span class="frame-placeholder">${String(index+1).padStart(3,"0")}</span><span><b>F${String(index+1).padStart(3,"0")}</b><small>${(index/30).toFixed(2)}s</small></span>`;document.querySelector("#frame-grid").append(frame)}
+    const sequence=document.querySelector("#sequence");
+    document.querySelector("#step-2").onclick=()=>sequence.className="landing-cube-sequence sequence-step-1";
+    document.querySelector("#step-3").onclick=()=>sequence.className="landing-cube-sequence sequence-step-2";
+  </script>
+</body>
+</html>
