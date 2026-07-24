@@ -67,7 +67,8 @@ button.brand { border:0; background:transparent; padding:0; cursor:pointer; }
 .sequence-step-1.is-manual-twist .cube-turning-layer { transition:none; }
 .sequence-step-1.is-manual-twist.is-settling-twist .cube-turning-layer { transition:transform .42s cubic-bezier(.16,1,.3,1); }
 .twist-cubie { width:34px; height:34px; position:absolute; left:50%; top:50%; transform:translate3d(var(--tx),var(--ty),var(--tz)); transform-style:preserve-3d; }
-.cubie-face { position:absolute; inset:0; display:block; border:2px solid #080c0b; background:#101614; box-shadow:inset 0 0 0 1px rgba(232,240,237,.05); backface-visibility:hidden; opacity:1; transition:opacity .3s ease; }
+.cubie-face { position:absolute; inset:0; display:block; border:2px solid #080c0b; background:#101614; box-shadow:inset 0 0 0 1px rgba(232,240,237,.05); backface-visibility:hidden; opacity:1; transition:opacity .62s cubic-bezier(.4,0,.2,1); }
+.sequence-step-2 .cubie-face { opacity:0; }
 .cubie-front { transform:translateZ(17px); }
 .cubie-back { transform:rotateY(180deg) translateZ(17px); }
 .cubie-right { transform:rotateY(90deg) translateZ(17px); }

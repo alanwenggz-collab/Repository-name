@@ -16,6 +16,8 @@ test("3D guide scenes transition without flattening ancestors", async () => {
   assert.match(scattered, /scale\(\.001\)/);
   assert.match(css, /\.sequence-step-2 \.scatter-cube\s*\{[^}]*scale\(\.68\)/);
   assert.doesNotMatch(css, /\.sequence-step-2 \.sequence-rig-fade\s*\{[^}]*opacity/);
+  assert.match(css, /\.cubie-face\s*\{[^}]*transition:opacity \.62s/);
+  assert.match(css, /\.sequence-step-2 \.cubie-face\s*\{\s*opacity:0/);
 });
 
 test("custom sampling keeps the JSON download action pinned outside scrollable content", async () => {
@@ -32,4 +34,3 @@ test("custom sampling keeps the JSON download action pinned outside scrollable c
   assert.match(css, /\.result-work-list\s*\{[^}]*flex:1[^}]*overflow:auto/);
   assert.match(css, /\.result-downloads\s*\{[^}]*flex:0 0 56px[^}]*z-index:10/);
 });
-
