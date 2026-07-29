@@ -4,6 +4,8 @@ import { ChangeEvent, DragEvent as ReactDragEvent, type CSSProperties, useCallba
 import type { AnimationItem } from "lottie-web";
 import { strToU8, zipSync } from "fflate";
 
+const PUBLIC_BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || "";
+
 type ShapeName = "circle" | "square" | "triangle" | "star" | "heart" | "hexagon" | "path";
 type ColorInfo = { hex: string; label: string; count: number };
 type ShapeInfo = { name: string; count: number; mode: "lottie-group" | "lottie-layer" | "component" | "reference" };
@@ -838,7 +840,7 @@ function EasingPreview({ curve, compact = false }: { curve: EasingCurve; compact
 }
 
 function CubeLogo() {
-  return <img className="brand-logo" src="/jsonable-logo-v2.png" alt="" aria-hidden="true" />;
+  return <img className="brand-logo" src={`${PUBLIC_BASE_PATH}/jsonable-logo-v2.png`} alt="" aria-hidden="true" />;
 }
 
 function ActionIcon({ name }: { name: "upload" | "compress" | "download" }) {

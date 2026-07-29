@@ -82,3 +82,11 @@ test("selected easing curves highlight their associated Lottie elements", async 
   assert.match(css, /\.lottie-stage \.jsonable-motion-highlight/);
   assert.match(css, /\.motion-highlight-label/);
 });
+
+test("brand logo respects the GitHub Pages base path", async () => {
+  const page = await readFile(new URL("app/page.tsx", root), "utf8");
+
+  assert.match(page, /const PUBLIC_BASE_PATH = process\.env\.NEXT_PUBLIC_BASE_PATH \|\| ""/);
+  assert.match(page, /src=\{`\$\{PUBLIC_BASE_PATH\}\/jsonable-logo-v2\.png`\}/);
+  assert.doesNotMatch(page, /src="\/jsonable-logo-v2\.png"/);
+});
