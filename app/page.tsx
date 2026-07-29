@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, DragEvent as ReactDragEvent, type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent as ReactDragEvent, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AnimationItem } from "lottie-web";
 import { strToU8, zipSync } from "fflate";
 
@@ -36,10 +36,6 @@ const SAMPLE = {
   ],
 };
 
-const SHAPES: ShapeName[] = ["circle", "square", "triangle", "star", "heart", "hexagon"];
-const SHAPE_LABEL: Record<string, string> = {
-  circle: "圆形", square: "方形", triangle: "三角形", star: "星形", heart: "爱心", hexagon: "六边形", path: "路径",
-};
 const ALIASES: Record<string, ShapeName> = {
   circle: "circle", ellipse: "circle", oval: "circle", round: "circle", el: "circle",
   square: "square", rectangle: "square", rect: "square", box: "square", rc: "square",
@@ -64,19 +60,6 @@ const COLOR_KEY = /^(c|fc|sc|color|colour|fill|fillcolor|stroke|strokecolor|back
 
 function clamp(value: number) { return Math.max(0, Math.min(255, Math.round(value))); }
 function formatBytes(bytes: number) { return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`; }
-function bytesToBase64(bytes: Uint8Array) {
-  let binary = ""; const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-  return btoa(binary);
-}
-async function packMediaFile(file: File) {
-  const source = new Uint8Array(await file.arrayBuffer()); let packed = source; let encoding = "base64";
-  if (typeof CompressionStream !== "undefined") {
-    const stream = file.stream().pipeThrough(new CompressionStream("gzip")); const compressed = new Uint8Array(await new Response(stream).arrayBuffer());
-    if (compressed.length < source.length) { packed = compressed; encoding = "gzip+base64"; }
-  }
-  return { name: file.name, mime: file.type || "application/octet-stream", originalSize: file.size, packedSize: packed.length, encoding, data: bytesToBase64(packed) };
-}
 function rgbHex(r: number, g: number, b: number) { return `#${[r, g, b].map((v) => clamp(v).toString(16).padStart(2, "0")).join("")}`.toUpperCase(); }
 function normalizeHex(value: string) {
   const argb = /^0x/i.test(value); let raw = value.replace(/^#|^0x/i, "");
@@ -264,6 +247,27 @@ function scanEasings(data: unknown) {
     else if (object) Object.entries(object).forEach(([key, child]) => scan(child, `${path}.${key}`, currentElement, animatedPropertyCategory(key, child, inheritedCategory)));
   };
   scan(data); return [...profiles.values()].sort((a, b) => b.count - a.count);
+}
+
+function lottieDataWithMotionHighlights(data: Record<string, unknown>, elementIds: string[]) {
+  const highlighted = new Set(elementIds);
+  if (!highlighted.size) return JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
+  const next = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
+  const visit = (value: unknown, path = "$") => {
+    if (Array.isArray(value)) {
+      value.forEach((child, index) => visit(child, `${path}[${index}]`));
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    const object = value as Record<string, unknown>;
+    if (highlighted.has(path)) {
+      const existingClass = typeof object.cl === "string" ? object.cl.trim() : "";
+      object.cl = [existingClass, "jsonable-motion-highlight"].filter(Boolean).join(" ");
+    }
+    Object.entries(object).forEach(([key, child]) => visit(child, `${path}.${key}`));
+  };
+  visit(next);
+  return next;
 }
 
 function updateEasingPoint(point: unknown, x: number, y: number) {
@@ -770,7 +774,7 @@ function ShapeThumb({ data, shape }: { data: unknown; shape: ShapeInfo }) {
   return <span className="shape-thumb shape-thumb-generic">{primitives.slice(0, 4).map((primitive, index) => <i key={`${primitive}-${index}`} className={`shape shape-${primitive}`} />)}{!primitives.length && <ComposedMark />}</span>;
 }
 
-function LottiePreview({ data }: { data: Record<string, unknown> }) {
+function LottiePreview({ data, highlightElementIds = [], highlightLabel = "" }: { data: Record<string, unknown>; highlightElementIds?: string[]; highlightLabel?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const animationRef = useRef<AnimationItem | null>(null);
   const totalFramesRef = useRef(1);
@@ -780,13 +784,17 @@ function LottiePreview({ data }: { data: Record<string, unknown> }) {
   const [progress, setProgress] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const highlightedData = useMemo(() => lottieDataWithMotionHighlights(data, highlightElementIds), [data, highlightElementIds.join("|")]);
   useEffect(() => {
     let animation: AnimationItem | undefined; let active = true;
-    setFailed(false); setPlaying(true); setProgress(0); setCurrentTime(0); setDuration(0);
+    queueMicrotask(() => {
+      if (!active) return;
+      setFailed(false); setPlaying(true); setProgress(0); setCurrentTime(0); setDuration(0);
+    });
     import("lottie-web/build/player/lottie_light").then(({ default: lottie }) => {
       if (!active || !ref.current) return;
       ref.current.innerHTML = "";
-      animation = lottie.loadAnimation({ container: ref.current, renderer: "svg", loop: true, autoplay: true, animationData: JSON.parse(JSON.stringify(data)) });
+      animation = lottie.loadAnimation({ container: ref.current, renderer: "svg", loop: true, autoplay: true, animationData: highlightedData });
       animationRef.current = animation;
       animation.addEventListener?.("DOMLoaded", () => {
         const totalFrames = Math.max(1, animation?.getDuration(true) || 1); const totalSeconds = Math.max(0, animation?.getDuration(false) || 0);
@@ -801,7 +809,7 @@ function LottiePreview({ data }: { data: Record<string, unknown> }) {
       animation.addEventListener?.("data_failed", () => setFailed(true));
     }).catch(() => setFailed(true));
     return () => { active = false; animationRef.current = null; animation?.destroy(); };
-  }, [data]);
+  }, [highlightedData]);
   const togglePlayback = () => {
     const animation = animationRef.current; if (!animation) return;
     if (playing) animation.pause(); else animation.play();
@@ -812,7 +820,7 @@ function LottiePreview({ data }: { data: Record<string, unknown> }) {
     animation.goToAndStop(nextProgress * totalFramesRef.current, true); setPlaying(false); setProgress(nextProgress); setCurrentTime(nextProgress * duration);
   };
   const timeLabel = (seconds: number) => `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
-  return failed ? <div className="preview-message">动画结构无法直接渲染，已显示识别到的视觉元素。</div> : <div className="lottie-player"><div ref={ref} className="lottie-stage" /><div className="playback-controls"><button type="button" onClick={togglePlayback} aria-label={playing ? "暂停预览" : "播放预览"}><span aria-hidden="true">{playing ? "Ⅱ" : "▶"}</span></button><span className="playback-time">{timeLabel(currentTime)}</span><input type="range" min="0" max="1000" step="1" value={Math.round(progress * 1000)} onChange={(event) => seek(Number(event.target.value) / 1000)} aria-label="动画播放进度" style={{ "--playback-progress": `${progress * 100}%` } as CSSProperties} /><span className="playback-time">{timeLabel(duration)}</span></div></div>;
+  return failed ? <div className="preview-message">动画结构无法直接渲染，已显示识别到的视觉元素。</div> : <div className={highlightElementIds.length ? "lottie-player has-motion-highlight" : "lottie-player"}><div ref={ref} className="lottie-stage" />{highlightLabel && <div className="motion-highlight-label"><span>当前曲线</span><strong>{highlightLabel}</strong><small>视觉中发光的素材为当前关联元素</small></div>}<div className="playback-controls"><button type="button" onClick={togglePlayback} aria-label={playing ? "暂停预览" : "播放预览"}><span aria-hidden="true">{playing ? "Ⅱ" : "▶"}</span></button><span className="playback-time">{timeLabel(currentTime)}</span><input type="range" min="0" max="1000" step="1" value={Math.round(progress * 1000)} onChange={(event) => seek(Number(event.target.value) / 1000)} aria-label="动画播放进度" style={{ "--playback-progress": `${progress * 100}%` } as CSSProperties} /><span className="playback-time">{timeLabel(duration)}</span></div></div>;
 }
 
 function ImageThumb({ source, label }: { source: string; label: string }) {
@@ -1065,21 +1073,25 @@ function SharedLandingCube({ step }: { step: number }) {
       return choices[Math.floor(Math.random() * choices.length)];
     }));
   };
-  const selectNearestScatter = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (step !== 2) return;
-    event.stopPropagation();
-    const targets = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("[data-scatter-index]"));
-    let nearestIndex = -1;
-    let nearestDistance = Number.POSITIVE_INFINITY;
-    targets.forEach((target) => {
-      const rect = target.getBoundingClientRect();
-      const distance = Math.hypot(event.clientX - (rect.left + rect.width / 2), event.clientY - (rect.top + rect.height / 2));
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearestIndex = Number(target.dataset.scatterIndex);
+  const activateScatterAtPoint = (clientX: number, clientY: number) => {
+    if (step !== 2 || !sequenceRef.current) return;
+    let selectedIndex = -1;
+    let selectedDistance = Number.POSITIVE_INFINITY;
+    sequenceRef.current.querySelectorAll<HTMLElement>(".scatter-cube").forEach((cube) => {
+      const frontFace = cube.querySelector<HTMLElement>(".scatter-front");
+      const rect = (frontFace ?? cube).getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const distance = Math.hypot(clientX - centerX, clientY - centerY);
+      if (distance < selectedDistance) {
+        selectedDistance = distance;
+        selectedIndex = Number(cube.dataset.scatterIndex);
       }
     });
-    if (nearestIndex >= 0) randomizeScatterColor(nearestIndex);
+    // 3D faces overlap in screen space, especially on the right column. The
+    // nearest projected center gives every visible cube one stable hit area.
+    if (selectedIndex >= 0 && selectedDistance <= 64) randomizeScatterColor(selectedIndex);
   };
   return <div
     className={`landing-cube-sequence sequence-step-${step}`}
@@ -1103,11 +1115,20 @@ function SharedLandingCube({ step }: { step: number }) {
         </div>
       </div>
     </div>
-    <div className="scatter-fade" aria-hidden="true">
+    <div className="scatter-fade" aria-hidden={step !== 2}>
       <div className="scatter-field">
-        {SCATTER_POSITIONS.map(([x, y, z], index) => <div
+        {SCATTER_POSITIONS.map(([x, y, z], index) => <button
           key={index}
+          type="button"
           className="scatter-cube"
+          data-scatter-index={index}
+          aria-label={`改变第 ${index + 1} 个立方体颜色`}
+          tabIndex={step === 2 ? 0 : -1}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (step === 2) randomizeScatterColor(index);
+          }}
           style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px`, "--scatter-z": `${z}px`, "--scatter-color": scatterColors[index], "--scatter-delay": `${index * 55}ms` } as CSSProperties}
         >
           <span className="scatter-face scatter-front" />
@@ -1116,24 +1137,18 @@ function SharedLandingCube({ step }: { step: number }) {
           <span className="scatter-face scatter-left" />
           <span className="scatter-face scatter-top" />
           <span className="scatter-face scatter-bottom" />
-        </div>)}
+        </button>)}
       </div>
     </div>
-    <div className="scatter-hit-layer" role="group" aria-label="九个可点击改色的漂浮立方体" onPointerUp={selectNearestScatter}>
-      {SCATTER_POSITIONS.map(([x, y], index) => <button
-        key={index}
-        type="button"
-        className="scatter-hit"
-        data-scatter-index={index}
-        aria-label={`改变第 ${index + 1} 个立方体颜色`}
-        tabIndex={step === 2 ? 0 : -1}
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => {
-          if (event.detail === 0) randomizeScatterColor(index);
-        }}
-        style={{ "--scatter-x": `${x}px`, "--scatter-y": `${y}px` } as CSSProperties}
-      />)}
-    </div>
+    <div
+      className="scatter-interaction-layer"
+      aria-hidden="true"
+      onPointerDown={(event) => event.stopPropagation()}
+      onPointerUp={(event) => {
+        event.stopPropagation();
+        activateScatterAtPoint(event.clientX, event.clientY);
+      }}
+    />
   </div>;
 }
 
@@ -1150,10 +1165,10 @@ function LandingGuideVisual({ step }: { step: number }) {
   </div>;
 }
 
-function VisualPreview({ data, colors, shapes, images, isDefault }: { data: unknown; colors: ColorInfo[]; shapes: ShapeInfo[]; images: ImageInfo[]; isDefault: boolean }) {
+function VisualPreview({ data, colors, shapes, images, isDefault, highlightElementIds = [], highlightLabel = "" }: { data: unknown; colors: ColorInfo[]; shapes: ShapeInfo[]; images: ImageInfo[]; isDefault: boolean; highlightElementIds?: string[]; highlightLabel?: string }) {
   if (isDefault) return <div className="token-stage default-cube-stage"><MagicCube /></div>;
   const items = shapes.flatMap((shape) => Array.from({ length: Math.min(shape.count, 6) }, () => shape)).slice(0, 24);
-  if (isLottie(data)) return <LottiePreview data={data} />;
+  if (isLottie(data)) return <LottiePreview data={data} highlightElementIds={highlightElementIds} highlightLabel={highlightLabel} />;
   const object = data && typeof data === "object" ? data as Record<string, unknown> : {};
   const canvas = object.canvas && typeof object.canvas === "object" ? object.canvas as Record<string, unknown> : {};
   const canvasBackground = typeof canvas.background === "string" ? parseCssColor(canvas.background) : null;
@@ -1226,7 +1241,7 @@ export default function Home() {
   const jsonText = useMemo(() => JSON.stringify(data, null, 2), [data]);
   const sequenceFrameInspection = useMemo(() => inspectSequenceFrames(data), [data]);
   const sequenceSamplingAvailable = sequenceFrameInspection.matched;
-  const buildCompressionResults = (settings: CompressionSamplingSettings): CompressionResults => {
+  const buildCompressionResults = useCallback((settings: CompressionSamplingSettings): CompressionResults => {
     const originalSize = new Blob([jsonText]).size;
     const normalText = JSON.stringify(data); const normalSize = new Blob([normalText]).size; const normalPercentage = originalSize ? Math.max(0, (1 - normalSize / originalSize) * 100) : 0;
     const normalOptimizations: OptimizationItem[] = [{ key: "whitespace", title: "移除格式空白", description: "仅删除缩进、换行与多余空格，不改变字段与数值。", count: 1, examples: [`整份文件 · 减少 ${formatBytes(Math.max(0, originalSize - new Blob([JSON.stringify(data)]).size))}`] }];
@@ -1248,7 +1263,7 @@ export default function Home() {
       normal: { text: normalText, originalSize, compressedSize: normalSize, percentage: normalPercentage, optimizations: normalOptimizations },
       advanced: { text: advancedText, originalSize, compressedSize: advancedSize, percentage: advancedPercentage, optimizations: optimized.optimizations },
     };
-  };
+  }, [data, jsonText, sequenceSamplingAvailable]);
   const updateCompressionSampling = (next: FrameSamplingSetting) => {
     const settings = { advanced: next };
     setCompressionSampling(settings);
@@ -1276,16 +1291,26 @@ export default function Home() {
     }, 6000);
     return () => window.clearTimeout(timer);
   }, [hasUploadedFile, landingStep, landingCycle]);
-  useEffect(() => { setCompressionCountdown(null); setCompressionResult(null); setCompressionReportOpen(false); }, [data]);
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setCompressionCountdown(null); setCompressionResult(null); setCompressionReportOpen(false);
+    });
+    return () => { active = false; };
+  }, [data]);
   useEffect(() => {
     if (compressionCountdown === null) return;
-    if (compressionCountdown > 0) {
-      const timer = window.setTimeout(() => setCompressionCountdown((current) => current === null ? null : current - 1), 1000);
-      return () => window.clearTimeout(timer);
-    }
-    setCompressionResult(buildCompressionResults(compressionSampling)); setCompressionCountdown(null); setCompressionReportOpen(true);
-    setToast(`一键压缩完成：已生成普通版和高级版`);
-  }, [compressionCountdown, data, jsonText, compressionSampling]);
+    const timer = window.setTimeout(() => {
+      if (compressionCountdown > 0) {
+        setCompressionCountdown((current) => current === null ? null : current - 1);
+        return;
+      }
+      setCompressionResult(buildCompressionResults(compressionSampling)); setCompressionCountdown(null); setCompressionReportOpen(true);
+      setToast(`一键压缩完成：已生成普通版和高级版`);
+    }, compressionCountdown > 0 ? 1000 : 0);
+    return () => window.clearTimeout(timer);
+  }, [compressionCountdown, compressionSampling, buildCompressionResults]);
   useEffect(() => {
     if (!colorEditor && !shapeEditorOpen && !imageEditorOpen && !batchImageEditorOpen && !historyOpen && !compressionReportOpen) return;
     const previousOverflow = document.body.style.overflow;
@@ -1303,6 +1328,19 @@ export default function Home() {
   const activeEasingCount = activeEasing ? selectedMotionElement ? activeEasing.paths.filter((path) => path.startsWith(selectedMotionElement)).length : activeEasing.count : 0;
   const selectedMotionElementInfo = motionElements.find((element) => element.id === selectedMotionElement);
   const selectedEasingCategoryInfo = EASING_CATEGORIES.find((category) => category.id === selectedEasingCategory)!;
+  const motionHighlightElementIds = activeTab !== "easing"
+    ? []
+    : selectedMotionElement
+      ? [selectedMotionElement]
+      : selectedEasing && activeEasing
+        ? activeEasing.elements.map((element) => element.id)
+        : [];
+  const motionHighlightLabel = selectedMotionElementInfo?.name
+    || (selectedEasing && activeEasing
+      ? activeEasing.elements.length > 1
+        ? `${activeEasing.elements[0]?.name || "关联素材"}等 ${activeEasing.elements.length} 个元素`
+        : activeEasing.elements[0]?.name || "关联素材"
+      : "");
   const batchMappedCount = batchImageTargets.filter((targetId) => batchUploadedImages[batchImageMappings[targetId]]).length;
   const tabMeta = activeTab === "colors"
     ? { title: "颜色", english: "COLORS", description: `识别到 ${colors.length} 种颜色，编辑窗口会保持开启。` }
@@ -1520,15 +1558,25 @@ export default function Home() {
     <header className="topbar">
       <button className="brand" type="button" onClick={goHome} aria-label="返回 Jsonable 首页"><CubeLogo /><span>Jsonable</span></button>
       <div className="top-actions"><span className="privacy"><span className="privacy-dot" />文件仅在本地处理，不保存</span>
-        <button className="button button-ghost action-button" onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}><ActionIcon name="upload" /><span>{mediaConverting ? "正在转换" : hasUploadedFile ? "更换文件" : "上传文件"}</span></button>
+        {hasUploadedFile && <button className="button button-ghost action-button" onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}><ActionIcon name="upload" /><span>{mediaConverting ? "正在转换" : "更换文件"}</span></button>}
         <button className="button button-ghost action-button" disabled={!hasUploadedFile || compressionCountdown !== null} title={!hasUploadedFile ? "上传 JSON 后可使用一键压缩" : undefined} onClick={() => { setCompressionResult(null); setCompressionReportOpen(false); setCompressionCountdown(3); }}><ActionIcon name="compress" /><span>{compressionCountdown !== null ? `压缩中 ${compressionCountdown}` : "一键压缩"}</span></button>
         <button className="button button-dark action-button" onClick={download} disabled={!hasUploadedFile} title={!hasUploadedFile ? "上传文件后可下载 JSON" : undefined}><span>{mediaConversion ? "下载转换 JSON" : "下载 JSON"}</span><ActionIcon name="download" /></button>
       </div>
     </header>
     <input ref={unifiedFileRef} type="file" accept="application/json,.json,video/mp4,image/gif,image/apng,image/png,image/jpeg,image/webp,.apng" multiple onChange={unifiedUpload} hidden />
     {!hasUploadedFile ? <section className={isDraggingLanding ? "landing-hero is-dragging" : "landing-hero"} onDragEnter={(event) => { event.preventDefault(); setIsDraggingLanding(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDraggingLanding(false); }} onDrop={dropUnified}>
-      <div className="landing-copy"><span className="eyebrow">VISUAL JSON EDITOR</span><h1>预览 JSON，<br /><em>编辑 Lottie。</em></h1><p>JSON、MP4、GIF、APNG 与序列帧都可以。媒体文件会先转换成可播放、可编辑的 Lottie JSON。</p><div className="landing-steps" role="tablist" aria-label="Jsonable 使用流程">{LANDING_STEPS.map((item, index) => <button key={`${item.number}-${index === landingStep ? landingCycle : "idle"}`} type="button" role="tab" aria-selected={index === landingStep} className={index === landingStep ? "active" : ""} onClick={() => { setLandingStep(index); setLandingCycle((current) => current + 1); }}><span>{item.number}</span>{item.label}</button>)}</div></div>
-      <div className={`landing-upload guide-step-${landingStep}`}><LandingGuideVisual step={landingStep} /><button onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "正在转换媒体..." : "选择文件"}<span>＋</span></button><strong>或把文件拖到这里</strong><small>支持单个 JSON / 视频 / 动图，也支持多选序列帧</small>{mediaConversionError && <em>{mediaConversionError}</em>}{isDraggingLanding && <div className="landing-drop-state">松开开始处理</div>}</div>
+      <div className="landing-copy">
+        <span className="eyebrow">VISUAL JSON EDITOR</span>
+        <h1>预览 JSON，<br /><em>编辑 Lottie。</em></h1>
+        <p>JSON、MP4、GIF、APNG 与序列帧都可以。媒体文件会先转换成可播放、可编辑的 Lottie JSON。</p>
+        <div className="landing-cta">
+          <button onClick={() => unifiedFileRef.current?.click()} disabled={mediaConverting}>{mediaConverting ? "正在转换媒体..." : "选择文件"}<span>＋</span></button>
+          <div><strong>或把文件拖到页面</strong><small>支持 JSON、视频、动图与多选序列帧</small></div>
+          {mediaConversionError && <em>{mediaConversionError}</em>}
+        </div>
+        <div className="landing-steps" role="tablist" aria-label="Jsonable 使用流程">{LANDING_STEPS.map((item, index) => <button key={`${item.number}-${index === landingStep ? landingCycle : "idle"}`} type="button" role="tab" aria-selected={index === landingStep} className={index === landingStep ? "active" : ""} onClick={() => { setLandingStep(index); setLandingCycle((current) => current + 1); }}><span>{item.number}</span>{item.label}</button>)}</div>
+      </div>
+      <div className={`landing-visual guide-step-${landingStep}`}><LandingGuideVisual step={landingStep} />{isDraggingLanding && <div className="landing-drop-state">松开开始处理</div>}</div>
     </section> : <section className="editor-context"><div className="file-summary"><span className="eyebrow">NOW EDITING</span><strong>{fileName}</strong><small>{isLottie(data) ? "可播放 Lottie" : "JSON 视觉结构"} · {formatBytes(new Blob([jsonText]).size)} · 仅保留在当前会话</small></div><div className="history-actions"><button onClick={undoEdit} disabled={versionIndex <= 0} title="撤销（⌘/Ctrl + Z）">撤销</button><button onClick={redoEdit} disabled={versionIndex < 0 || versionIndex >= versions.length - 1} title="重做（⌘/Ctrl + Shift + Z）">重做</button><button onClick={restoreOriginal} disabled={versionIndex === 0}>恢复原始</button><button className="history-button" onClick={openHistory}>修改记录 <b>{Math.max(0, versions.length - 1)}</b></button>{compressionResult && <button className="history-button optimization-report-button" onClick={() => setCompressionReportOpen(true)}>压缩结果 <b>2</b></button>}</div></section>}
     {error && <div className="error" role="alert">{error}</div>}
     {hasUploadedFile && <section className="workspace">
@@ -1537,13 +1585,13 @@ export default function Home() {
         {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><button className="picker-button" onClick={() => setColorEditor({ current: color.hex, draft: color.hex, count: color.count })}><span className="picker-chip" style={{ background: color.hex }} />选择颜色</button></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> : activeTab === "shapes" ?
         <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => { setSelectedShape(id); setUploadedSvg(null); setReplacementError(""); setShapeEditorOpen(true); }}><ShapeThumb data={data} shape={shape} /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div></div> : activeTab === "images" ?
         <div className="image-workbench"><div className="image-list">{images.map((item) => <button key={item.id} className={activeImage?.id === item.id ? "image-row selected" : "image-row"} onClick={() => { setSelectedImage(item.id); setUploadedImage(null); setImageError(""); setImageEditorOpen(true); }}><span className="image-thumb"><ImageThumb source={item.preview} label={item.name} /></span><span><strong>{item.name}</strong><small>{item.mode === "lottie-asset" ? "Lottie 图片资源" : item.key}</small></span><b>× {item.count}</b></button>)}{!images.length && <Empty text="暂未识别到图片资源；支持 Lottie assets 和常见图片地址字段" />}</div></div> :
-        <div className={easingDetailOpen ? "easing-workbench detail" : "easing-workbench"}>{easings.length ? easingDetailOpen && activeEasing ? <div className="easing-detail"><div className="easing-detail-nav"><button className="easing-back" onClick={() => { setEasingDetailOpen(false); setSelectedEasing(""); setEasingDraft(null); }}>返回曲线列表</button><span>{selectedEasingCategoryInfo.label} / {selectedEasingCategoryInfo.english}</span></div><div className="easing-scope"><span>应用位置</span><strong>{selectedMotionElementInfo ? selectedMotionElementInfo.name : `${activeEasing.elements.length || 1} 个关联元素`}</strong><div>{(selectedMotionElementInfo ? [selectedMotionElementInfo] : activeEasing.elements).map((element) => <button key={element.id} onClick={() => selectMotionElementFilter(element.id)}>{element.name}</button>)}</div></div><div className="easing-editor"><div className="easing-editor-preview"><EasingPreview curve={easingEditorCurve} /><div><small>CUBIC BEZIER</small><strong>{easingEditorCurve.outX.toFixed(2)}, {easingEditorCurve.outY.toFixed(2)}, {easingEditorCurve.inX.toFixed(2)}, {easingEditorCurve.inY.toFixed(2)}</strong><span>本次将修改 {activeEasingCount} 个{selectedEasingCategoryInfo.label}关键帧</span><code className="easing-source-path">{selectedMotionElement ? activeEasing.paths.find((path) => path.startsWith(selectedMotionElement)) || activeEasing.paths[0] : activeEasing.paths[0]}</code></div></div><div className="easing-presets">{EASING_PRESETS.map((preset) => <button key={preset.name} onClick={() => setEasingDraft(preset.curve)}>{preset.name}</button>)}</div><div className="easing-controls">{(["outX", "outY", "inX", "inY"] as const).map((key) => <label key={key}><span>{key === "outX" ? "出点 X" : key === "outY" ? "出点 Y" : key === "inX" ? "入点 X" : "入点 Y"}<output>{easingEditorCurve[key].toFixed(2)}</output></span><input type="range" min="0" max="1" step=".01" value={easingEditorCurve[key]} onChange={(event) => setEasingDraft({ ...easingEditorCurve, [key]: Number(event.target.value) })} /></label>)}</div><button className="apply-easing" onClick={() => applyEasingCurve(easingEditorCurve)}>应用到{selectedMotionElementInfo ? `「${selectedMotionElementInfo.name}」` : "全部关联元素"}</button><p>预设只更新当前草稿，点击“应用到”按钮后才会写入 JSON。</p></div></div> : <><div className="easing-categories" role="tablist" aria-label="动效属性分类">{EASING_CATEGORIES.map((category) => <button key={category.id} type="button" role="tab" aria-selected={selectedEasingCategory === category.id} className={selectedEasingCategory === category.id ? "active" : ""} onClick={() => selectEasingCategory(category.id)}><span>{category.label}<small>{category.english}</small></span><b>{easingCategoryCounts[category.id]}</b></button>)}</div><div className="easing-filter"><label htmlFor="motion-element-filter">按元素筛选</label><select id="motion-element-filter" value={selectedMotionElement} onChange={(event) => selectMotionElementFilter(event.target.value)}><option value="">全部动画元素</option>{motionElements.map((element) => <option key={element.id} value={element.id}>{element.name}</option>)}</select><span>{filteredEasings.length} 组关联曲线</span></div>{filteredEasings.length ? <div className="easing-profile-list">{filteredEasings.map((profile, index) => { const profileCount = selectedMotionElement ? profile.paths.filter((path) => path.startsWith(selectedMotionElement)).length : profile.count; return <button key={profile.id} className="easing-profile" onClick={() => selectEasingProfile(profile)}><EasingPreview curve={profile} compact /><span><strong>{selectedEasingCategoryInfo.label}曲线 {String(index + 1).padStart(2, "0")}</strong><small>{profileCount} 个关键帧 / {profile.elements.length || 1} 个元素</small></span><code>{profile.outX.toFixed(2)}, {profile.outY.toFixed(2)}, {profile.inX.toFixed(2)}, {profile.inY.toFixed(2)}</code></button>; })}</div> : <Empty text={`当前筛选中没有可编辑的${selectedEasingCategoryInfo.label}曲线`} />}</> : <Empty text="没有识别到可编辑的 Lottie 贝塞尔关键帧曲线" />}</div>}
+        <div className={easingDetailOpen ? "easing-workbench detail" : "easing-workbench"}>{easings.length ? easingDetailOpen && activeEasing ? <div className="easing-detail"><div className="easing-detail-nav"><button className="easing-back" onClick={() => { setEasingDetailOpen(false); setSelectedEasing(""); setEasingDraft(null); }}>返回曲线列表</button><span>{selectedEasingCategoryInfo.label} / {selectedEasingCategoryInfo.english}</span></div><div className="easing-scope"><span>应用位置</span><strong>{selectedMotionElementInfo ? selectedMotionElementInfo.name : `${activeEasing.elements.length || 1} 个关联元素`}</strong><div>{(selectedMotionElementInfo ? [selectedMotionElementInfo] : activeEasing.elements).map((element) => <button key={element.id} onClick={() => selectMotionElementFilter(element.id)}>{element.name}</button>)}</div></div><div className="easing-editor"><div className="easing-editor-preview"><EasingPreview curve={easingEditorCurve} /><div><small>CUBIC BEZIER</small><strong>{easingEditorCurve.outX.toFixed(2)}, {easingEditorCurve.outY.toFixed(2)}, {easingEditorCurve.inX.toFixed(2)}, {easingEditorCurve.inY.toFixed(2)}</strong><span>本次将修改 {activeEasingCount} 个{selectedEasingCategoryInfo.label}关键帧</span><code className="easing-source-path">{selectedMotionElement ? activeEasing.paths.find((path) => path.startsWith(selectedMotionElement)) || activeEasing.paths[0] : activeEasing.paths[0]}</code></div></div><div className="easing-presets">{EASING_PRESETS.map((preset) => <button key={preset.name} onClick={() => setEasingDraft(preset.curve)}>{preset.name}</button>)}</div><div className="easing-controls">{(["outX", "outY", "inX", "inY"] as const).map((key) => <label key={key}><span>{key === "outX" ? "出点 X" : key === "outY" ? "出点 Y" : key === "inX" ? "入点 X" : "入点 Y"}<output>{easingEditorCurve[key].toFixed(2)}</output></span><input type="range" min="0" max="1" step=".01" value={easingEditorCurve[key]} onChange={(event) => setEasingDraft({ ...easingEditorCurve, [key]: Number(event.target.value) })} /></label>)}</div><button className="apply-easing" onClick={() => applyEasingCurve(easingEditorCurve)}>应用到{selectedMotionElementInfo ? `「${selectedMotionElementInfo.name}」` : "全部关联元素"}</button><p>预设只更新当前草稿，点击“应用到”按钮后才会写入 JSON。</p></div></div> : <><div className="easing-categories" role="tablist" aria-label="动效属性分类">{EASING_CATEGORIES.map((category) => <button key={category.id} type="button" role="tab" aria-selected={selectedEasingCategory === category.id} className={selectedEasingCategory === category.id ? "active" : ""} onClick={() => selectEasingCategory(category.id)}><span>{category.label}<small>{category.english}</small></span><b>{easingCategoryCounts[category.id]}</b></button>)}</div><div className="easing-filter"><label htmlFor="motion-element-filter">按元素筛选</label><select id="motion-element-filter" value={selectedMotionElement} onChange={(event) => selectMotionElementFilter(event.target.value)}><option value="">全部动画元素</option>{motionElements.map((element) => <option key={element.id} value={element.id}>{element.name}</option>)}</select><span>{filteredEasings.length} 组关联曲线</span></div>{filteredEasings.length ? <div className="easing-profile-list">{filteredEasings.map((profile, index) => { const profileCount = selectedMotionElement ? profile.paths.filter((path) => path.startsWith(selectedMotionElement)).length : profile.count; const elementNames = profile.elements.map((element) => element.name); return <button key={profile.id} className="easing-profile" onClick={() => selectEasingProfile(profile)}><EasingPreview curve={profile} compact /><span><strong>{selectedEasingCategoryInfo.label}曲线 {String(index + 1).padStart(2, "0")}</strong><small className="easing-element-name">{elementNames.slice(0, 2).join(" · ") || "未命名关联元素"}{elementNames.length > 2 ? ` 等 ${elementNames.length} 个` : ""}</small><small>{profileCount} 个关键帧 / {profile.elements.length || 1} 个元素</small></span><code>{profile.outX.toFixed(2)}, {profile.outY.toFixed(2)}, {profile.inX.toFixed(2)}, {profile.inY.toFixed(2)}</code></button>; })}</div> : <Empty text={`当前筛选中没有可编辑的${selectedEasingCategoryInfo.label}曲线`} />}</> : <Empty text="没有识别到可编辑的 Lottie 贝塞尔关键帧曲线" />}</div>}
       </section>
       <aside className="json-panel">
         <div className="preview-title"><span className="status-dot" />视觉预览</div>
         <div className={isDraggingJson ? "preview-panel is-dragging" : "preview-panel"} onDragEnter={(event) => { event.preventDefault(); setIsDraggingJson(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setIsDraggingJson(false); }} onDrop={dropJson}>
           <div className="preview-head"><span>{!hasUploadedFile ? "JSONABLE CUBE" : isLottie(data) ? "LOTTIE LIVE" : "AUTO LAYOUT"}</span><b>{colors.length} COLORS / {shapes.length} SHAPES / {images.length} IMAGES / {easings.length} CURVES</b></div>
-          <VisualPreview data={data} colors={colors} shapes={shapes} images={images} isDefault={!hasUploadedFile} />
+          <VisualPreview data={data} colors={colors} shapes={shapes} images={images} isDefault={!hasUploadedFile} highlightElementIds={motionHighlightElementIds} highlightLabel={motionHighlightLabel} />
           <div className="preview-foot">{hasUploadedFile ? "修改颜色、形状、图片或动效曲线后自动刷新" : "拖入 JSON 到预览框，或使用顶部上传按钮"}</div>
           {isDraggingJson && <div className="drop-overlay"><span>↓</span><strong>松开即可载入 JSON</strong><small>文件只在本地浏览器中处理</small></div>}
         </div>
