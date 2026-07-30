@@ -103,7 +103,9 @@ test("AE precomps are terminal shape-recognition units", async () => {
 
   assert.match(page, /mode: "lottie-precomp" \| "lottie-group"/);
   assert.match(page, /object\.ty === 0 && typeof object\.refId === "string"/);
-  assert.match(page, /if \(candidate\.mode === "lottie-precomp"\) return/);
+  assert.match(page, /function scanShapes[\s\S]*collectPrecompReferences\(data\)/);
+  assert.match(page, /candidate\?\.mode === "lottie-precomp"\) addCandidate\(candidate\)/);
+  assert.match(page, /if \(candidate\.mode === "lottie-precomp"\) \{[\s\S]*if \(!lottieRoot\) addCandidate\(candidate\);[\s\S]*return/);
   assert.match(page, /if \(isRoot && lottieRoot && childKey === "assets"\) return/);
   assert.match(page, /优先按 AE 预合成识别，预合成内部不再拆分/);
 });

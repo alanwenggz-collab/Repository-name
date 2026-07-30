@@ -137,12 +137,25 @@ function scanShapes(data: unknown) {
   const map = new Map<string, ShapeInfo>();
   const root = data && typeof data === "object" && !Array.isArray(data) ? data as Record<string, unknown> : null;
   const lottieRoot = !!root && Array.isArray(root.layers) && Array.isArray(root.assets);
+  const addCandidate = (candidate: Omit<ShapeInfo, "count">) => {
+    const id = `${candidate.mode}:${candidate.name}`; const current = map.get(id);
+    map.set(id, { ...candidate, count: (current?.count || 0) + 1 });
+  };
+  const collectPrecompReferences = (value: unknown, parentKey = "root") => {
+    const candidate = composedDescriptor(value, parentKey);
+    if (candidate?.mode === "lottie-precomp") addCandidate(candidate);
+    if (Array.isArray(value)) value.forEach((child) => collectPrecompReferences(child, parentKey));
+    else if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([childKey, child]) => collectPrecompReferences(child, childKey));
+  };
+  if (lottieRoot) collectPrecompReferences(data);
   const scan = (value: unknown, parentKey = "root", isRoot = false) => {
     const candidate = composedDescriptor(value, parentKey);
     if (candidate) {
-      const id = `${candidate.mode}:${candidate.name}`; const current = map.get(id);
-      map.set(id, { ...candidate, count: (current?.count || 0) + 1 });
-      if (candidate.mode === "lottie-precomp") return;
+      if (candidate.mode === "lottie-precomp") {
+        if (!lottieRoot) addCandidate(candidate);
+        return;
+      }
+      addCandidate(candidate);
     }
     if (Array.isArray(value)) value.forEach((child) => scan(child, parentKey));
     else if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([childKey, child]) => {
