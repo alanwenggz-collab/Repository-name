@@ -90,3 +90,10 @@ test("brand logo respects the GitHub Pages base path", async () => {
   assert.match(page, /src=\{`\$\{PUBLIC_BASE_PATH\}\/jsonable-logo-v2\.png`\}/);
   assert.doesNotMatch(page, /src="\/jsonable-logo-v2\.png"/);
 });
+
+test("shape replacement preview uses a light inspection surface", async () => {
+  const css = await readFile(new URL("app/globals.css", root), "utf8");
+
+  assert.match(css, /\.composed-current \.shape-thumb\s*\{\s*background:#eef3f1/);
+  assert.doesNotMatch(css, /\.composed-current \.shape-thumb,\.current-image-preview\s*\{\s*background:#202926/);
+});

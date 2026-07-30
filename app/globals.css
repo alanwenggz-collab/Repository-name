@@ -684,7 +684,8 @@ h2 { font-family:inherit; font-size:28px; font-weight:720; letter-spacing:-.8px;
 .replace-kicker { color:var(--accent); font-size:10px; }
 .replace-card h3,.color-dialog header h3 { font-family:inherit; font-weight:700; letter-spacing:-.5px; }
 .composed-current,.current-image { border-color:var(--line); background:var(--surface); color:var(--accent); }
-.composed-current .shape-thumb,.current-image-preview { background:#202926; border-color:#3b4944; }
+.composed-current .shape-thumb { background:#eef3f1; border-color:#c9d4d0; box-shadow:inset 0 0 0 1px rgba(255,255,255,.7); }
+.current-image-preview { background:#202926; border-color:#3b4944; }
 .composed-current small,.current-image>span:last-child small { color:var(--muted); font-size:10px; }
 .composed-current strong,.current-image>span:last-child strong { color:var(--text); font-size:13px; }
 .composed-current>b,.current-image>span:last-child em { color:var(--accent); font-size:10px; }
