@@ -309,7 +309,8 @@ h2 { font-family:inherit; font-size:28px; margin:0; font-weight:500; }
 .shape-row b { font:10px "Courier New",monospace; color:var(--violet); }
 .shape-thumb { width:54px; height:54px; display:grid; place-items:center; overflow:hidden; background:#f0ede7; border:1px solid #d9d4cb; color:var(--violet); flex:0 0 auto; }
 .shape-thumb-canvas,.shape-thumb-canvas svg { width:100%!important; height:100%!important; display:block; }
-.shape-thumb-canvas { position:relative; }
+.shape-thumb-canvas { position:relative; padding:3px; box-sizing:border-box; }
+.shape-thumb-canvas svg { filter:drop-shadow(0 0 1px rgba(20,35,30,.42)); }
 .shape-thumb-canvas[data-empty="true"]::after { content:"无可见帧"; position:absolute; inset:0; display:grid; place-items:center; padding:4px; background:rgba(227,233,230,.92); color:#66736e; font:8px var(--font-din),"PingFang SC",sans-serif; text-align:center; }
 .shape-thumb-generic { position:relative; }
 .shape-thumb-generic>.shape { position:absolute; width:24px; height:24px; opacity:.82; }

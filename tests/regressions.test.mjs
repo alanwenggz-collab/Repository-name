@@ -111,6 +111,17 @@ test("AE precomps are terminal shape-recognition units", async () => {
   assert.match(page, /优先按 AE 预合成识别，预合成内部不再拆分/);
 });
 
+test("shape recognition excludes non-visual AE helper and matte layers", async () => {
+  const page = await readFile(new URL("app/page.tsx", root), "utf8");
+
+  assert.match(page, /function hasRenderableLottieGeometry/);
+  assert.match(page, /object\.ty === 3 \|\| object\.ty === 6 \|\| object\.ty === 13/);
+  assert.match(page, /typeof object\.td === "number" && object\.td > 0/);
+  assert.match(page, /if \(lottieRoot && isNonVisualLottieLayer\(value, parentKey\)\) return/);
+  assert.match(page, /parentKey === "layers" && object\.ty === 4 && hasRenderableLottieGeometry\(object\.shapes\)/);
+  assert.match(page, /object\.ty === "gr" && hasRenderableLottieGeometry\(object\.it\)/);
+});
+
 test("shape thumbnails select a visible representative frame", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
@@ -119,7 +130,11 @@ test("shape thumbnails select a visible representative frame", async () => {
 
   assert.match(page, /const candidates = \[\.\.\.new Set\(\[0, \.03, \.06, \.1, \.18, \.33, \.5, \.72\]/);
   assert.match(page, /const score = svg \? visibleScore\(svg\) : 0/);
+  assert.match(page, /const paintOpacity = Math\.max/);
+  assert.match(page, /opacity \* paintOpacity/);
   assert.match(page, /animation\.goToAndStop\(bestFrame, true\)/);
   assert.match(page, /ref\.current\.dataset\.empty = bestScore > 0 \? "false" : "true"/);
   assert.match(css, /\.shape-thumb-canvas\[data-empty="true"\]::after/);
+  assert.match(css, /\.shape-thumb-canvas\s*\{[^}]*padding:3px/);
+  assert.match(css, /\.shape-thumb-canvas svg\s*\{[^}]*drop-shadow/);
 });

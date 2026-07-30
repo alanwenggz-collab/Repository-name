@@ -119,12 +119,31 @@ function scanColors(data: unknown) {
   scan(data); return [...map.values()];
 }
 
+const LOTTIE_GEOMETRY_TYPES = new Set(["sh", "rc", "el", "sr"]);
+
+function hasRenderableLottieGeometry(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasRenderableLottieGeometry);
+  if (!value || typeof value !== "object") return false;
+  const object = value as Record<string, unknown>;
+  if (object.hd === true) return false;
+  if (typeof object.ty === "string" && LOTTIE_GEOMETRY_TYPES.has(object.ty)) return true;
+  return Object.values(object).some(hasRenderableLottieGeometry);
+}
+
+function isNonVisualLottieLayer(value: unknown, parentKey: string) {
+  if (parentKey !== "layers" || !value || typeof value !== "object" || Array.isArray(value)) return false;
+  const object = value as Record<string, unknown>;
+  const isNullOrHelper = object.ty === 3 || object.ty === 6 || object.ty === 13;
+  const isTrackMatteSource = typeof object.td === "number" && object.td > 0;
+  return object.hd === true || isNullOrHelper || isTrackMatteSource;
+}
+
 function composedDescriptor(value: unknown, parentKey = "root"): Omit<ShapeInfo, "count"> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const object = value as Record<string, unknown>;
   if (parentKey === "layers" && object.ty === 0 && typeof object.refId === "string" && object.refId.trim() && typeof object.nm === "string" && object.nm.trim()) return { name: object.nm.trim(), mode: "lottie-precomp" };
-  if (object.ty === "gr" && typeof object.nm === "string" && object.nm.trim() && !/^__json(?:icle|able)_svg_part_/.test(object.nm)) return { name: object.nm.trim(), mode: "lottie-group" };
-  if (parentKey === "layers" && typeof object.nm === "string" && object.nm.trim()) return { name: object.nm.trim(), mode: "lottie-layer" };
+  if (object.ty === "gr" && hasRenderableLottieGeometry(object.it) && typeof object.nm === "string" && object.nm.trim() && !/^__json(?:icle|able)_svg_part_/.test(object.nm)) return { name: object.nm.trim(), mode: "lottie-group" };
+  if (parentKey === "layers" && object.ty === 4 && hasRenderableLottieGeometry(object.shapes) && typeof object.nm === "string" && object.nm.trim()) return { name: object.nm.trim(), mode: "lottie-layer" };
   const name = [object.name, object.nm, object.componentName].find((item) => typeof item === "string" && item.trim()) as string | undefined;
   const hasParts = ["children", "items", "elements", "shapes", "components", "paths"].some((key) => Array.isArray(object[key]) && (object[key] as unknown[]).length > 0);
   if (name && hasParts && !ALIASES[name.toLowerCase().replace(/[\s_-]/g, "")]) return { name: name.trim(), mode: "component" };
@@ -149,6 +168,7 @@ function scanShapes(data: unknown) {
   };
   if (lottieRoot) collectPrecompReferences(data);
   const scan = (value: unknown, parentKey = "root", isRoot = false) => {
+    if (lottieRoot && isNonVisualLottieLayer(value, parentKey)) return;
     const candidate = composedDescriptor(value, parentKey);
     if (candidate) {
       if (candidate.mode === "lottie-precomp") {
@@ -782,11 +802,14 @@ function LottieShapeThumb({ animationData, label }: { animationData: Record<stri
         }
         if (opacity <= .01) return score;
         const style = window.getComputedStyle(element);
-        const hasPaint = (style.fill && style.fill !== "none" && style.fill !== "rgba(0, 0, 0, 0)") || (style.stroke && style.stroke !== "none" && style.stroke !== "rgba(0, 0, 0, 0)");
-        if (!hasPaint) return score;
+        const transparent = (paint: string) => !paint || paint === "none" || paint === "transparent" || /rgba?\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(paint);
+        const fillOpacity = transparent(style.fill) ? 0 : Number.parseFloat(style.fillOpacity || "1");
+        const strokeOpacity = transparent(style.stroke) ? 0 : Number.parseFloat(style.strokeOpacity || "1");
+        const paintOpacity = Math.max(Number.isFinite(fillOpacity) ? fillOpacity : 1, Number.isFinite(strokeOpacity) ? strokeOpacity : 1);
+        if (paintOpacity <= .01) return score;
         try {
           const box = element.getBBox();
-          return score + Math.max(1, box.width * box.height) * opacity;
+          return score + Math.max(1, box.width * box.height) * opacity * paintOpacity;
         } catch { return score; }
       }, 0);
       animation.addEventListener?.("DOMLoaded", () => {
