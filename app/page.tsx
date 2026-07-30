@@ -754,7 +754,7 @@ function shapePreviewData(data: unknown, shape: ShapeInfo) {
 function LottieShapeThumb({ animationData, label }: { animationData: Record<string, unknown>; label: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    let animation: AnimationItem | undefined; let active = true; let timer = 0;
+    let animation: AnimationItem | undefined; let active = true; const timers: number[] = [];
     import("lottie-web/build/player/lottie_light").then(({ default: lottie }) => {
       if (!active || !ref.current) return;
       ref.current.innerHTML = "";
@@ -772,9 +772,40 @@ function LottieShapeThumb({ animationData, label }: { animationData: Record<stri
           }
         } catch { /* SVG may not be measurable until its first frame. */ }
       };
-      animation.addEventListener?.("DOMLoaded", () => { animation?.goToAndStop(0, true); timer = window.setTimeout(fit, 30); });
+      const visibleScore = (svg: SVGSVGElement) => Array.from(svg.querySelectorAll<SVGGraphicsElement>("path,rect,ellipse,circle,polygon,polyline")).reduce((score, element) => {
+        let opacity = 1; let current: Element | null = element;
+        while (current && current !== svg) {
+          const style = window.getComputedStyle(current);
+          if (style.display === "none" || style.visibility === "hidden") return score;
+          opacity *= Number.parseFloat(style.opacity || "1");
+          current = current.parentElement;
+        }
+        if (opacity <= .01) return score;
+        const style = window.getComputedStyle(element);
+        const hasPaint = (style.fill && style.fill !== "none" && style.fill !== "rgba(0, 0, 0, 0)") || (style.stroke && style.stroke !== "none" && style.stroke !== "rgba(0, 0, 0, 0)");
+        if (!hasPaint) return score;
+        try {
+          const box = element.getBBox();
+          return score + Math.max(1, box.width * box.height) * opacity;
+        } catch { return score; }
+      }, 0);
+      animation.addEventListener?.("DOMLoaded", () => {
+        if (!animation || !ref.current) return;
+        const totalFrames = Math.max(1, animation.getDuration(true) || 1);
+        const candidates = [...new Set([0, .03, .06, .1, .18, .33, .5, .72].map((ratio) => Math.min(totalFrames - 1, Math.max(0, Math.round(totalFrames * ratio)))))];
+        let bestFrame = candidates[0] || 0; let bestScore = -1;
+        candidates.forEach((frame) => {
+          animation?.goToAndStop(frame, true);
+          const svg = ref.current?.querySelector("svg");
+          const score = svg ? visibleScore(svg) : 0;
+          if (score > bestScore) { bestScore = score; bestFrame = frame; }
+        });
+        animation.goToAndStop(bestFrame, true);
+        ref.current.dataset.empty = bestScore > 0 ? "false" : "true";
+        [0, 40, 120].forEach((delay) => timers.push(window.setTimeout(fit, delay)));
+      });
     });
-    return () => { active = false; window.clearTimeout(timer); animation?.destroy(); };
+    return () => { active = false; timers.forEach(window.clearTimeout); animation?.destroy(); };
   }, [animationData]);
   return <div ref={ref} className="shape-thumb-canvas" role="img" aria-label={`${label} 形状预览`} />;
 }

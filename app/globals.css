@@ -309,6 +309,8 @@ h2 { font-family:inherit; font-size:28px; margin:0; font-weight:500; }
 .shape-row b { font:10px "Courier New",monospace; color:var(--violet); }
 .shape-thumb { width:54px; height:54px; display:grid; place-items:center; overflow:hidden; background:#f0ede7; border:1px solid #d9d4cb; color:var(--violet); flex:0 0 auto; }
 .shape-thumb-canvas,.shape-thumb-canvas svg { width:100%!important; height:100%!important; display:block; }
+.shape-thumb-canvas { position:relative; }
+.shape-thumb-canvas[data-empty="true"]::after { content:"无可见帧"; position:absolute; inset:0; display:grid; place-items:center; padding:4px; background:rgba(227,233,230,.92); color:#66736e; font:8px var(--font-din),"PingFang SC",sans-serif; text-align:center; }
 .shape-thumb-generic { position:relative; }
 .shape-thumb-generic>.shape { position:absolute; width:24px; height:24px; opacity:.82; }
 .shape-thumb-generic>.shape:nth-child(1) { transform:translate(-8px,-7px); }
@@ -679,12 +681,13 @@ h2 { font-family:inherit; font-size:28px; font-weight:720; letter-spacing:-.8px;
 .image-row strong,.shape-row strong { font-size:13px; }
 .image-row small,.shape-row small { color:var(--muted); font-size:10px; }
 .image-row>b,.shape-row b { color:var(--accent); font-size:10px; }
-.image-thumb,.shape-thumb { background:#202926; border-color:#3b4944; color:var(--accent); }
+.image-thumb { background:#202926; border-color:#3b4944; }
+.shape-thumb { background-color:#e3e9e6; background-image:linear-gradient(45deg,rgba(195,205,201,.42) 25%,transparent 25%),linear-gradient(-45deg,rgba(195,205,201,.42) 25%,transparent 25%),linear-gradient(45deg,transparent 75%,rgba(195,205,201,.42) 75%),linear-gradient(-45deg,transparent 75%,rgba(195,205,201,.42) 75%); background-position:0 0,0 6px,6px -6px,-6px 0; background-size:12px 12px; border-color:#c3ceca; color:var(--accent); }
 .replace-card { background:#101513; color:var(--text); border:1px solid var(--line); padding:26px; }
 .replace-kicker { color:var(--accent); font-size:10px; }
 .replace-card h3,.color-dialog header h3 { font-family:inherit; font-weight:700; letter-spacing:-.5px; }
 .composed-current,.current-image { border-color:var(--line); background:var(--surface); color:var(--accent); }
-.composed-current .shape-thumb { background:#eef3f1; border-color:#c9d4d0; box-shadow:inset 0 0 0 1px rgba(255,255,255,.7); }
+.composed-current .shape-thumb { background-color:#e3e9e6; border-color:#c3ceca; box-shadow:inset 0 0 0 1px rgba(255,255,255,.7); }
 .current-image-preview { background:#202926; border-color:#3b4944; }
 .composed-current small,.current-image>span:last-child small { color:var(--muted); font-size:10px; }
 .composed-current strong,.current-image>span:last-child strong { color:var(--text); font-size:13px; }

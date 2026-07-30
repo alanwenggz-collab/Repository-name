@@ -94,7 +94,8 @@ test("brand logo respects the GitHub Pages base path", async () => {
 test("shape replacement preview uses a light inspection surface", async () => {
   const css = await readFile(new URL("app/globals.css", root), "utf8");
 
-  assert.match(css, /\.composed-current \.shape-thumb\s*\{\s*background:#eef3f1/);
+  assert.match(css, /\.shape-thumb\s*\{\s*background-color:#e3e9e6/);
+  assert.match(css, /\.composed-current \.shape-thumb\s*\{\s*background-color:#e3e9e6/);
   assert.doesNotMatch(css, /\.composed-current \.shape-thumb,\.current-image-preview\s*\{\s*background:#202926/);
 });
 
@@ -108,4 +109,17 @@ test("AE precomps are terminal shape-recognition units", async () => {
   assert.match(page, /if \(candidate\.mode === "lottie-precomp"\) \{[\s\S]*if \(!lottieRoot\) addCandidate\(candidate\);[\s\S]*return/);
   assert.match(page, /if \(isRoot && lottieRoot && childKey === "assets"\) return/);
   assert.match(page, /优先按 AE 预合成识别，预合成内部不再拆分/);
+});
+
+test("shape thumbnails select a visible representative frame", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
+  ]);
+
+  assert.match(page, /const candidates = \[\.\.\.new Set\(\[0, \.03, \.06, \.1, \.18, \.33, \.5, \.72\]/);
+  assert.match(page, /const score = svg \? visibleScore\(svg\) : 0/);
+  assert.match(page, /animation\.goToAndStop\(bestFrame, true\)/);
+  assert.match(page, /ref\.current\.dataset\.empty = bestScore > 0 \? "false" : "true"/);
+  assert.match(css, /\.shape-thumb-canvas\[data-empty="true"\]::after/);
 });
