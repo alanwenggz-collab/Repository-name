@@ -97,3 +97,13 @@ test("shape replacement preview uses a light inspection surface", async () => {
   assert.match(css, /\.composed-current \.shape-thumb\s*\{\s*background:#eef3f1/);
   assert.doesNotMatch(css, /\.composed-current \.shape-thumb,\.current-image-preview\s*\{\s*background:#202926/);
 });
+
+test("AE precomps are terminal shape-recognition units", async () => {
+  const page = await readFile(new URL("app/page.tsx", root), "utf8");
+
+  assert.match(page, /mode: "lottie-precomp" \| "lottie-group"/);
+  assert.match(page, /object\.ty === 0 && typeof object\.refId === "string"/);
+  assert.match(page, /if \(candidate\.mode === "lottie-precomp"\) return/);
+  assert.match(page, /if \(isRoot && lottieRoot && childKey === "assets"\) return/);
+  assert.match(page, /优先按 AE 预合成识别，预合成内部不再拆分/);
+});

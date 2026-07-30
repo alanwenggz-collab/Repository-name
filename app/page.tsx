@@ -8,7 +8,7 @@ const PUBLIC_BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || "";
 
 type ShapeName = "circle" | "square" | "triangle" | "star" | "heart" | "hexagon" | "path";
 type ColorInfo = { hex: string; label: string; count: number };
-type ShapeInfo = { name: string; count: number; mode: "lottie-group" | "lottie-layer" | "component" | "reference" };
+type ShapeInfo = { name: string; count: number; mode: "lottie-precomp" | "lottie-group" | "lottie-layer" | "component" | "reference" };
 type UploadedSvg = { fileName: string; name: string; preview: string; raw: string; group: Record<string, unknown>; partCount: number };
 type ImageInfo = { id: string; name: string; value: string; preview: string; count: number; mode: "lottie-asset" | "field"; assetId?: string; key?: string };
 type UploadedImage = { fileName: string; dataUrl: string; width: number; height: number; size: number };
@@ -122,6 +122,7 @@ function scanColors(data: unknown) {
 function composedDescriptor(value: unknown, parentKey = "root"): Omit<ShapeInfo, "count"> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const object = value as Record<string, unknown>;
+  if (parentKey === "layers" && object.ty === 0 && typeof object.refId === "string" && object.refId.trim() && typeof object.nm === "string" && object.nm.trim()) return { name: object.nm.trim(), mode: "lottie-precomp" };
   if (object.ty === "gr" && typeof object.nm === "string" && object.nm.trim() && !/^__json(?:icle|able)_svg_part_/.test(object.nm)) return { name: object.nm.trim(), mode: "lottie-group" };
   if (parentKey === "layers" && typeof object.nm === "string" && object.nm.trim()) return { name: object.nm.trim(), mode: "lottie-layer" };
   const name = [object.name, object.nm, object.componentName].find((item) => typeof item === "string" && item.trim()) as string | undefined;
@@ -134,16 +135,22 @@ function composedDescriptor(value: unknown, parentKey = "root"): Omit<ShapeInfo,
 
 function scanShapes(data: unknown) {
   const map = new Map<string, ShapeInfo>();
-  const scan = (value: unknown, parentKey = "root") => {
+  const root = data && typeof data === "object" && !Array.isArray(data) ? data as Record<string, unknown> : null;
+  const lottieRoot = !!root && Array.isArray(root.layers) && Array.isArray(root.assets);
+  const scan = (value: unknown, parentKey = "root", isRoot = false) => {
     const candidate = composedDescriptor(value, parentKey);
     if (candidate) {
       const id = `${candidate.mode}:${candidate.name}`; const current = map.get(id);
       map.set(id, { ...candidate, count: (current?.count || 0) + 1 });
+      if (candidate.mode === "lottie-precomp") return;
     }
     if (Array.isArray(value)) value.forEach((child) => scan(child, parentKey));
-    else if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([childKey, child]) => scan(child, childKey));
+    else if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([childKey, child]) => {
+      if (isRoot && lottieRoot && childKey === "assets") return;
+      scan(child, childKey);
+    });
   };
-  scan(data); return [...map.values()];
+  scan(data, "root", true); return [...map.values()];
 }
 
 const IMAGE_KEY = /^(src|url|path|image|imageurl|image_url|href|poster|thumbnail|backgroundimage|background_image)$/i;
@@ -674,7 +681,8 @@ function findShapeTemplate(data: unknown, target: string, targetMode?: ShapeInfo
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const descriptor = composedDescriptor(data, parentKey);
     if (descriptor?.name === target && descriptor.mode !== "reference" && (!targetMode || descriptor.mode === targetMode)) return data as Record<string, unknown>;
-    for (const [childKey, child] of Object.entries(data as Record<string, unknown>)) {
+    const entries = Object.entries(data as Record<string, unknown>).sort(([left], [right]) => left === "layers" ? -1 : right === "layers" ? 1 : 0);
+    for (const [childKey, child] of entries) {
       const found = findShapeTemplate(child, target, targetMode, childKey); if (found) return found;
     }
   } else if (Array.isArray(data)) for (const child of data) { const found = findShapeTemplate(child, target, targetMode, parentKey); if (found) return found; }
@@ -688,7 +696,7 @@ function transplantShape(current: Record<string, unknown>, template: Record<stri
     const transform = (current.it as Record<string, unknown>[]).find((item) => item.ty === "tr");
     if (transform) next.it = (next.it as Record<string, unknown>[]).map((item) => item.ty === "tr" ? clone(transform) : item);
   }
-  const preserve = mode === "lottie-layer" ? ["ind", "parent", "ks", "ip", "op", "st"] : ["id", "key", "x", "y", "position", "transform", "layout"];
+  const preserve = mode === "lottie-layer" || mode === "lottie-precomp" ? ["ind", "parent", "ks", "ip", "op", "st"] : ["id", "key", "x", "y", "position", "transform", "layout"];
   preserve.forEach((key) => { if (key in current) next[key] = clone(current[key]); });
   return next;
 }
@@ -720,11 +728,11 @@ function ComposedMark() { return <span className="composed-mark"><i /><i /><i />
 
 function shapePreviewData(data: unknown, shape: ShapeInfo) {
   const template = findShapeTemplate(data, shape.name, shape.mode);
-  if (!template || (shape.mode !== "lottie-group" && shape.mode !== "lottie-layer")) return null;
+  if (!template || (shape.mode !== "lottie-precomp" && shape.mode !== "lottie-group" && shape.mode !== "lottie-layer")) return null;
   const root = data && typeof data === "object" ? data as Record<string, unknown> : {};
   const frameRate = typeof root.fr === "number" ? root.fr : 30;
   const duration = typeof root.op === "number" ? Math.max(root.op as number, 1) : 60;
-  const layer = shape.mode === "lottie-layer"
+  const layer = shape.mode === "lottie-layer" || shape.mode === "lottie-precomp"
     ? { ...clone(template), ip: 0, op: duration, st: 0 }
     : { ty: 4, nm: shape.name, shapes: [clone(template)], ks: { o: { a: 0, k: 100 }, r: { a: 0, k: 0 }, p: { a: 0, k: [0, 0, 0] }, a: { a: 0, k: [0, 0, 0] }, s: { a: 0, k: [100, 100, 100] } }, ip: 0, op: duration, st: 0 };
   return { v: typeof root.v === "string" ? root.v : "5.10.0", fr: frameRate, ip: 0, op: duration, w: typeof root.w === "number" ? root.w : 512, h: typeof root.h === "number" ? root.h : 512, nm: `${shape.name} preview`, ddd: 0, assets: Array.isArray(root.assets) ? clone(root.assets) : [], layers: [layer] } as Record<string, unknown>;
@@ -774,6 +782,14 @@ function ShapeThumb({ data, shape }: { data: unknown; shape: ShapeInfo }) {
   };
   visit(template);
   return <span className="shape-thumb shape-thumb-generic">{primitives.slice(0, 4).map((primitive, index) => <i key={`${primitive}-${index}`} className={`shape shape-${primitive}`} />)}{!primitives.length && <ComposedMark />}</span>;
+}
+
+function shapeModeLabel(mode: ShapeInfo["mode"]) {
+  if (mode === "lottie-precomp") return "AE 预合成";
+  if (mode === "lottie-layer") return "Lottie 图层";
+  if (mode === "lottie-group") return "Lottie 组合";
+  if (mode === "component") return "组合组件";
+  return "外部引用";
 }
 
 function LottiePreview({ data, highlightElementIds = [], highlightLabel = "" }: { data: Record<string, unknown>; highlightElementIds?: string[]; highlightLabel?: string }) {
@@ -1347,7 +1363,7 @@ export default function Home() {
   const tabMeta = activeTab === "colors"
     ? { title: "颜色", english: "COLORS", description: `识别到 ${colors.length} 种颜色，编辑窗口会保持开启。` }
     : activeTab === "shapes"
-      ? { title: "组合形状", english: "GROUPS", description: "选择主文件中的组合，再上传 SVG 作为新的矢量结构。" }
+      ? { title: "预合成与形状", english: "PRECOMPS", description: "优先按 AE 预合成识别，预合成内部不再拆分；未被预合成包裹的命名组合仍可替换。" }
       : activeTab === "images"
         ? { title: "图片资源", english: "IMAGES", description: `识别到 ${images.length} 个图片资源，替换后保留原图层布局与动画。` }
         : easingDetailOpen
@@ -1521,7 +1537,7 @@ export default function Home() {
     if (!uploadedSvg) return;
     if (from.mode === "reference") { setReplacementError("当前目标只是外部引用，无法写入 SVG 路径。请选择组合、组件或 Lottie 图层。"); return; }
     const group = clone(uploadedSvg.group); group.nm = from.name; group.__jsonableSvg = true;
-    const template = from.mode === "lottie-group" ? group : from.mode === "lottie-layer"
+    const template = from.mode === "lottie-group" ? group : from.mode === "lottie-layer" || from.mode === "lottie-precomp"
       ? { ty: 4, nm: from.name, shapes: [group], ks: {}, ip: 0, op: 1, st: 0, __jsonableSvg: true }
       : { name: from.name, componentName: from.name, type: "svg", svg: uploadedSvg.raw, items: [group], __jsonableSvg: true };
     if (commitEdit(replaceShape(data, from, from.name, template), `替换形状「${from.name}」`)) { setReplacementError(""); setToast(`已使用 ${uploadedSvg.fileName} 替换 ${from.count} 个「${from.name}」`); }
@@ -1582,10 +1598,10 @@ export default function Home() {
     </section> : <section className="editor-context"><div className="file-summary"><span className="eyebrow">NOW EDITING</span><strong>{fileName}</strong><small>{isLottie(data) ? "可播放 Lottie" : "JSON 视觉结构"} · {formatBytes(new Blob([jsonText]).size)} · 仅保留在当前会话</small></div><div className="history-actions"><button onClick={undoEdit} disabled={versionIndex <= 0} title="撤销（⌘/Ctrl + Z）">撤销</button><button onClick={redoEdit} disabled={versionIndex < 0 || versionIndex >= versions.length - 1} title="重做（⌘/Ctrl + Shift + Z）">重做</button><button onClick={restoreOriginal} disabled={versionIndex === 0}>恢复原始</button><button className="history-button" onClick={openHistory}>修改记录 <b>{Math.max(0, versions.length - 1)}</b></button>{compressionResult && <button className="history-button optimization-report-button" onClick={() => setCompressionReportOpen(true)}>压缩结果 <b>2</b></button>}</div></section>}
     {error && <div className="error" role="alert">{error}</div>}
     {hasUploadedFile && <section className="workspace">
-      <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>组合形状<small>Groups</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><button className={activeTab === "easing" ? "rail-item active" : "rail-item"} onClick={openEasingList}><span className="rail-icon">⌁</span><span>动效曲线<small>Easing</small></span><b>{easings.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、组合矢量、图片资源和关键帧加速度的本地编辑。</p></div></aside>
-      <section className="editor-panel"><div className="resource-tabs" role="tablist" aria-label="可替换资源"><button role="tab" aria-selected={activeTab === "colors"} className={activeTab === "colors" ? "active" : ""} onClick={() => setActiveTab("colors")}><span>颜色</span><small>COLORS</small><b>{colors.length}</b></button><button role="tab" aria-selected={activeTab === "shapes"} className={activeTab === "shapes" ? "active" : ""} onClick={() => setActiveTab("shapes")}><span>组合形状</span><small>GROUPS</small><b>{shapes.length}</b></button><button role="tab" aria-selected={activeTab === "images"} className={activeTab === "images" ? "active" : ""} onClick={() => setActiveTab("images")}><span>图片资源</span><small>IMAGES</small><b>{images.length}</b></button><button role="tab" aria-selected={activeTab === "easing"} className={activeTab === "easing" ? "active" : ""} onClick={openEasingList}><span>动效曲线</span><small>EASING</small><b>{easings.length}</b></button></div><div className="section-head"><div><h2>{tabMeta.title}</h2><span className="en">{tabMeta.english}</span></div><div className="section-head-side"><p>{tabMeta.description}</p>{activeTab === "images" && <button className="batch-replace-trigger" onClick={openBatchImageEditor} disabled={!images.length}>批量替换图片</button>}</div></div>
+      <aside className="rail"><div className="rail-title">已识别</div><button className={activeTab === "colors" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("colors")}><span className="rail-icon">◒</span><span>颜色<small>Colors</small></span><b>{colors.length}</b></button><button className={activeTab === "shapes" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("shapes")}><span className="rail-icon">◇</span><span>预合成<small>Precomps</small></span><b>{shapes.length}</b></button><button className={activeTab === "images" ? "rail-item active" : "rail-item"} onClick={() => setActiveTab("images")}><span className="rail-icon">▧</span><span>图片资源<small>Images</small></span><b>{images.length}</b></button><button className={activeTab === "easing" ? "rail-item active" : "rail-item"} onClick={openEasingList}><span className="rail-icon">⌁</span><span>动效曲线<small>Easing</small></span><b>{easings.length}</b></button><div className="rail-note"><span>↗</span><p>支持颜色、预合成、组合矢量、图片资源和关键帧加速度的本地编辑。</p></div></aside>
+      <section className="editor-panel"><div className="resource-tabs" role="tablist" aria-label="可替换资源"><button role="tab" aria-selected={activeTab === "colors"} className={activeTab === "colors" ? "active" : ""} onClick={() => setActiveTab("colors")}><span>颜色</span><small>COLORS</small><b>{colors.length}</b></button><button role="tab" aria-selected={activeTab === "shapes"} className={activeTab === "shapes" ? "active" : ""} onClick={() => setActiveTab("shapes")}><span>预合成</span><small>PRECOMPS</small><b>{shapes.length}</b></button><button role="tab" aria-selected={activeTab === "images"} className={activeTab === "images" ? "active" : ""} onClick={() => setActiveTab("images")}><span>图片资源</span><small>IMAGES</small><b>{images.length}</b></button><button role="tab" aria-selected={activeTab === "easing"} className={activeTab === "easing" ? "active" : ""} onClick={openEasingList}><span>动效曲线</span><small>EASING</small><b>{easings.length}</b></button></div><div className="section-head"><div><h2>{tabMeta.title}</h2><span className="en">{tabMeta.english}</span></div><div className="section-head-side"><p>{tabMeta.description}</p>{activeTab === "images" && <button className="batch-replace-trigger" onClick={openBatchImageEditor} disabled={!images.length}>批量替换图片</button>}</div></div>
         {activeTab === "colors" ? <div className="color-grid">{colors.map((color, index) => <article className="color-card" key={color.hex}><div className="swatch" style={{ background: color.hex }}><span>{String(index + 1).padStart(2, "0")}</span></div><div className="color-meta"><label>识别结果</label><strong>{color.hex}</strong><small>{color.label} · {color.count} 个引用</small></div><button className="picker-button" onClick={() => setColorEditor({ current: color.hex, draft: color.hex, count: color.count })}><span className="picker-chip" style={{ background: color.hex }} />选择颜色</button></article>)}{!colors.length && <Empty text="暂未识别到颜色；可切到 JSON 查看原始字段" />}</div> : activeTab === "shapes" ?
-        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => { setSelectedShape(id); setUploadedSvg(null); setReplacementError(""); setShapeEditorOpen(true); }}><ShapeThumb data={data} shape={shape} /><span><strong>{shape.name}</strong><small>{shape.mode.replace("lottie-", "Lottie ")}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到命名组合；基础圆形、矩形和路径已自动忽略" />}</div></div> : activeTab === "images" ?
+        <div className="shape-workbench"><div className="shape-list">{shapes.map((shape) => { const id = `${shape.mode}:${shape.name}`; return <button key={id} className={activeShape && `${activeShape.mode}:${activeShape.name}` === id ? "shape-row selected" : "shape-row"} onClick={() => { setSelectedShape(id); setUploadedSvg(null); setReplacementError(""); setShapeEditorOpen(true); }}><ShapeThumb data={data} shape={shape} /><span><strong>{shape.name}</strong><small>{shapeModeLabel(shape.mode)}</small></span><b>× {shape.count}</b></button>; })}{!shapes.length && <Empty text="暂未识别到 AE 预合成或命名组合；基础形状已自动忽略" />}</div></div> : activeTab === "images" ?
         <div className="image-workbench"><div className="image-list">{images.map((item) => <button key={item.id} className={activeImage?.id === item.id ? "image-row selected" : "image-row"} onClick={() => { setSelectedImage(item.id); setUploadedImage(null); setImageError(""); setImageEditorOpen(true); }}><span className="image-thumb"><ImageThumb source={item.preview} label={item.name} /></span><span><strong>{item.name}</strong><small>{item.mode === "lottie-asset" ? "Lottie 图片资源" : item.key}</small></span><b>× {item.count}</b></button>)}{!images.length && <Empty text="暂未识别到图片资源；支持 Lottie assets 和常见图片地址字段" />}</div></div> :
         <div className={easingDetailOpen ? "easing-workbench detail" : "easing-workbench"}>{easings.length ? easingDetailOpen && activeEasing ? <div className="easing-detail"><div className="easing-detail-nav"><button className="easing-back" onClick={() => { setEasingDetailOpen(false); setSelectedEasing(""); setEasingDraft(null); }}>返回曲线列表</button><span>{selectedEasingCategoryInfo.label} / {selectedEasingCategoryInfo.english}</span></div><div className="easing-scope"><span>应用位置</span><strong>{selectedMotionElementInfo ? selectedMotionElementInfo.name : `${activeEasing.elements.length || 1} 个关联元素`}</strong><div>{(selectedMotionElementInfo ? [selectedMotionElementInfo] : activeEasing.elements).map((element) => <button key={element.id} onClick={() => selectMotionElementFilter(element.id)}>{element.name}</button>)}</div></div><div className="easing-editor"><div className="easing-editor-preview"><EasingPreview curve={easingEditorCurve} /><div><small>CUBIC BEZIER</small><strong>{easingEditorCurve.outX.toFixed(2)}, {easingEditorCurve.outY.toFixed(2)}, {easingEditorCurve.inX.toFixed(2)}, {easingEditorCurve.inY.toFixed(2)}</strong><span>本次将修改 {activeEasingCount} 个{selectedEasingCategoryInfo.label}关键帧</span><code className="easing-source-path">{selectedMotionElement ? activeEasing.paths.find((path) => path.startsWith(selectedMotionElement)) || activeEasing.paths[0] : activeEasing.paths[0]}</code></div></div><div className="easing-presets">{EASING_PRESETS.map((preset) => <button key={preset.name} onClick={() => setEasingDraft(preset.curve)}>{preset.name}</button>)}</div><div className="easing-controls">{(["outX", "outY", "inX", "inY"] as const).map((key) => <label key={key}><span>{key === "outX" ? "出点 X" : key === "outY" ? "出点 Y" : key === "inX" ? "入点 X" : "入点 Y"}<output>{easingEditorCurve[key].toFixed(2)}</output></span><input type="range" min="0" max="1" step=".01" value={easingEditorCurve[key]} onChange={(event) => setEasingDraft({ ...easingEditorCurve, [key]: Number(event.target.value) })} /></label>)}</div><button className="apply-easing" onClick={() => applyEasingCurve(easingEditorCurve)}>应用到{selectedMotionElementInfo ? `「${selectedMotionElementInfo.name}」` : "全部关联元素"}</button><p>预设只更新当前草稿，点击“应用到”按钮后才会写入 JSON。</p></div></div> : <><div className="easing-categories" role="tablist" aria-label="动效属性分类">{EASING_CATEGORIES.map((category) => <button key={category.id} type="button" role="tab" aria-selected={selectedEasingCategory === category.id} className={selectedEasingCategory === category.id ? "active" : ""} onClick={() => selectEasingCategory(category.id)}><span>{category.label}<small>{category.english}</small></span><b>{easingCategoryCounts[category.id]}</b></button>)}</div><div className="easing-filter"><label htmlFor="motion-element-filter">按元素筛选</label><select id="motion-element-filter" value={selectedMotionElement} onChange={(event) => selectMotionElementFilter(event.target.value)}><option value="">全部动画元素</option>{motionElements.map((element) => <option key={element.id} value={element.id}>{element.name}</option>)}</select><span>{filteredEasings.length} 组关联曲线</span></div>{filteredEasings.length ? <div className="easing-profile-list">{filteredEasings.map((profile, index) => { const profileCount = selectedMotionElement ? profile.paths.filter((path) => path.startsWith(selectedMotionElement)).length : profile.count; const elementNames = profile.elements.map((element) => element.name); return <button key={profile.id} className="easing-profile" onClick={() => selectEasingProfile(profile)}><EasingPreview curve={profile} compact /><span><strong>{selectedEasingCategoryInfo.label}曲线 {String(index + 1).padStart(2, "0")}</strong><small className="easing-element-name">{elementNames.slice(0, 2).join(" · ") || "未命名关联元素"}{elementNames.length > 2 ? ` 等 ${elementNames.length} 个` : ""}</small><small>{profileCount} 个关键帧 / {profile.elements.length || 1} 个元素</small></span><code>{profile.outX.toFixed(2)}, {profile.outY.toFixed(2)}, {profile.inX.toFixed(2)}, {profile.inY.toFixed(2)}</code></button>; })}</div> : <Empty text={`当前筛选中没有可编辑的${selectedEasingCategoryInfo.label}曲线`} />}</> : <Empty text="没有识别到可编辑的 Lottie 贝塞尔关键帧曲线" />}</div>}
       </section>
