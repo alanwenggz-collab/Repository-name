@@ -659,30 +659,46 @@ async function svgToLottieGroup(svgText: string, name: string) {
     const elements = [...imported.querySelectorAll<SVGGeometryElement>("path,rect,circle,ellipse,polygon,polyline,line")];
     if (!elements.length) throw new Error("NO_GEOMETRY");
     const sampled = elements.map((element, index) => {
-      const length = element.getTotalLength();
-      if (!Number.isFinite(length) || length <= 0) return null;
       const tag = element.tagName.toLowerCase();
-      const closed = ["rect", "circle", "ellipse", "polygon"].includes(tag) || (tag === "path" && /z\s*$/i.test(element.getAttribute("d") || ""));
-      const count = Math.min(96, Math.max(closed ? 12 : 8, Math.ceil(length / 4)));
       const matrix = element.getCTM();
-      const vertices = Array.from({ length: count }, (_, pointIndex) => {
-        const distance = closed ? length * pointIndex / count : length * pointIndex / Math.max(count - 1, 1);
-        const point = element.getPointAtLength(distance);
-        const transformed = matrix ? new DOMPoint(point.x, point.y).matrixTransform(matrix) : point;
-        return [transformed.x, transformed.y];
-      });
+      const pathData = tag === "path" ? element.getAttribute("d") || "" : "";
+      const subpaths = tag === "path" ? pathData.match(/[Mm][\s\S]*?(?=[Mm]|$)/g)?.filter((part) => part.trim()) || [] : [];
+      const geometries: SVGGeometryElement[] = subpaths.length > 1
+        ? subpaths.map((part) => {
+          const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          path.setAttribute("d", part); imported.appendChild(path); return path;
+        })
+        : [element];
+      const contours = geometries.map((geometry, contourIndex) => {
+        const length = geometry.getTotalLength();
+        if (!Number.isFinite(length) || length <= 0) return null;
+        const contourData = subpaths.length > 1 ? subpaths[contourIndex] : pathData;
+        const closed = ["rect", "circle", "ellipse", "polygon"].includes(tag) || (tag === "path" && /z\s*$/i.test(contourData || ""));
+        const count = Math.min(128, Math.max(closed ? 12 : 8, Math.ceil(length / 2.5)));
+        const vertices = Array.from({ length: count }, (_, pointIndex) => {
+          const distance = closed ? length * pointIndex / count : length * pointIndex / Math.max(count - 1, 1);
+          const point = geometry.getPointAtLength(distance);
+          const transformed = matrix ? new DOMPoint(point.x, point.y).matrixTransform(matrix) : point;
+          return [transformed.x, transformed.y];
+        });
+        return { vertices, closed };
+      }).filter((contour): contour is NonNullable<typeof contour> => !!contour);
+      if (subpaths.length > 1) geometries.forEach((geometry) => geometry.remove());
+      if (!contours.length) return null;
       const style = getComputedStyle(element);
-      return { index, vertices, closed, fill: style.fill, fillOpacity: Number(style.fillOpacity || 1), stroke: style.stroke, strokeOpacity: Number(style.strokeOpacity || 1), strokeWidth: Number.parseFloat(style.strokeWidth || "1") || 1 };
+      return { index, contours, fill: style.fill, fillRule: style.fillRule, fillOpacity: Number(style.fillOpacity || 1), stroke: style.stroke, strokeOpacity: Number(style.strokeOpacity || 1), strokeWidth: Number.parseFloat(style.strokeWidth || "1") || 1 };
     }).filter((item): item is NonNullable<typeof item> => !!item);
     if (!sampled.length) throw new Error("NO_GEOMETRY");
-    const points = sampled.flatMap((item) => item.vertices); const xs = points.map((point) => point[0]); const ys = points.map((point) => point[1]);
+    const points = sampled.flatMap((item) => item.contours.flatMap((contour) => contour.vertices)); const xs = points.map((point) => point[0]); const ys = points.map((point) => point[1]);
     const minX = Math.min(...xs); const maxX = Math.max(...xs); const minY = Math.min(...ys); const maxY = Math.max(...ys);
     const scale = 100 / Math.max(maxX - minX || 1, maxY - minY || 1); const centerX = (minX + maxX) / 2; const centerY = (minY + maxY) / 2;
     const parts = sampled.map((item) => {
-      const vertices = item.vertices.map(([x, y]) => [(x - centerX) * scale, (y - centerY) * scale]);
-      const zeroTangents = vertices.map(() => [0, 0]);
-      const items: Record<string, unknown>[] = [{ ty: "sh", nm: `Path ${item.index + 1}`, ks: { a: 0, k: { i: zeroTangents, o: zeroTangents, v: vertices, c: item.closed } }, hd: false }];
-      if (item.fill !== "none") items.push({ ty: "fl", c: { a: 0, k: rgbArray(item.fill) }, o: { a: 0, k: Math.max(0, Math.min(100, item.fillOpacity * 100)) }, r: 1, hd: false });
+      const items: Record<string, unknown>[] = item.contours.map((contour, contourIndex) => {
+        const vertices = contour.vertices.map(([x, y]) => [(x - centerX) * scale, (y - centerY) * scale]);
+        const zeroTangents = vertices.map(() => [0, 0]);
+        return { ty: "sh", nm: `Path ${item.index + 1}.${contourIndex + 1}`, ks: { a: 0, k: { i: zeroTangents, o: zeroTangents, v: vertices, c: contour.closed } }, hd: false };
+      });
+      if (item.fill !== "none") items.push({ ty: "fl", c: { a: 0, k: rgbArray(item.fill) }, o: { a: 0, k: Math.max(0, Math.min(100, item.fillOpacity * 100)) }, r: item.fillRule === "evenodd" ? 2 : 1, hd: false });
       if (item.stroke !== "none" && item.strokeWidth > 0) items.push({ ty: "st", c: { a: 0, k: rgbArray(item.stroke) }, o: { a: 0, k: Math.max(0, Math.min(100, item.strokeOpacity * 100)) }, w: { a: 0, k: item.strokeWidth * scale }, lc: 2, lj: 2, hd: false });
       items.push(lottieTransform());
       return { ty: "gr", nm: `__jsonable_svg_part_${item.index + 1}`, it: items, hd: false };
@@ -721,37 +737,99 @@ function collectPathVertices(value: unknown, output: number[][] = []) {
   return output;
 }
 
-function collectLottieGeometryPoints(value: unknown, output: number[][] = []) {
-  if (Array.isArray(value)) value.forEach((item) => collectLottieGeometryPoints(item, output));
-  else if (value && typeof value === "object") {
-    const object = value as Record<string, unknown>;
-    if (object.hd === true) return output;
+type Matrix2D = [number, number, number, number, number, number];
+const IDENTITY_MATRIX: Matrix2D = [1, 0, 0, 1, 0, 0];
+
+function multiplyMatrix(parent: Matrix2D, child: Matrix2D): Matrix2D {
+  return [
+    parent[0] * child[0] + parent[2] * child[1],
+    parent[1] * child[0] + parent[3] * child[1],
+    parent[0] * child[2] + parent[2] * child[3],
+    parent[1] * child[2] + parent[3] * child[3],
+    parent[0] * child[4] + parent[2] * child[5] + parent[4],
+    parent[1] * child[4] + parent[3] * child[5] + parent[5],
+  ];
+}
+
+function transformPoint(matrix: Matrix2D, point: number[]) {
+  return [matrix[0] * point[0] + matrix[2] * point[1] + matrix[4], matrix[1] * point[0] + matrix[3] * point[1] + matrix[5]];
+}
+
+function lottieTransformMatrix(transform: Record<string, unknown> | undefined): Matrix2D {
+  if (!transform) return IDENTITY_MATRIX;
+  const position = lottieVector(transform.p) || [0, 0]; const anchor = lottieVector(transform.a) || [0, 0]; const scale = lottieVector(transform.s) || [100, 100];
+  const rotationValue = lottieStaticValue(transform.r ?? transform.rz); const radians = (typeof rotationValue === "number" ? rotationValue : 0) * Math.PI / 180;
+  const cosine = Math.cos(radians); const sine = Math.sin(radians); const scaleX = scale[0] / 100; const scaleY = scale[1] / 100;
+  return [
+    cosine * scaleX,
+    sine * scaleX,
+    -sine * scaleY,
+    cosine * scaleY,
+    position[0] - anchor[0] * cosine * scaleX + anchor[1] * sine * scaleY,
+    position[1] - anchor[0] * sine * scaleX - anchor[1] * cosine * scaleY,
+  ];
+}
+
+function collectLottieGeometryPoints(value: unknown, includeRootGroupTransform = true) {
+  const output: number[][] = [];
+  const visit = (node: unknown, matrix: Matrix2D, isRoot: boolean) => {
+    if (Array.isArray(node)) { node.forEach((item) => visit(item, matrix, false)); return; }
+    if (!node || typeof node !== "object") return;
+    const object = node as Record<string, unknown>;
+    if (object.hd === true) return;
+    if (object.ty === "gr" && Array.isArray(object.it)) {
+      const items = object.it as Record<string, unknown>[];
+      const transform = items.find((item) => item?.ty === "tr");
+      const nextMatrix = isRoot && !includeRootGroupTransform ? matrix : multiplyMatrix(matrix, lottieTransformMatrix(transform));
+      items.forEach((item) => { if (item?.ty !== "tr") visit(item, nextMatrix, false); });
+      return;
+    }
     if (object.ty === "sh") {
       const shape = lottieStaticValue(object.ks) as Record<string, unknown> | undefined;
-      if (Array.isArray(shape?.v)) (shape.v as unknown[]).forEach((point) => {
-        if (Array.isArray(point) && point.length >= 2 && point.slice(0, 2).every((item) => typeof item === "number")) output.push([point[0] as number, point[1] as number]);
+      const vertices = Array.isArray(shape?.v) ? shape.v as unknown[] : [];
+      const incoming = Array.isArray(shape?.i) ? shape.i as unknown[] : []; const outgoing = Array.isArray(shape?.o) ? shape.o as unknown[] : [];
+      const validVertices = vertices.filter((point): point is number[] => Array.isArray(point) && point.length >= 2 && point.slice(0, 2).every((item) => typeof item === "number"));
+      validVertices.forEach((vertex, index) => {
+        const nextIndex = index + 1 < validVertices.length ? index + 1 : shape?.c === true ? 0 : -1;
+        output.push(transformPoint(matrix, vertex));
+        if (nextIndex < 0) return;
+        const next = validVertices[nextIndex]; const out = Array.isArray(outgoing[index]) ? outgoing[index] as number[] : [0, 0]; const inc = Array.isArray(incoming[nextIndex]) ? incoming[nextIndex] as number[] : [0, 0];
+        for (let step = 1; step < 8; step += 1) {
+          const t = step / 8; const mt = 1 - t;
+          const point = [
+            mt ** 3 * vertex[0] + 3 * mt ** 2 * t * (vertex[0] + (out[0] || 0)) + 3 * mt * t ** 2 * (next[0] + (inc[0] || 0)) + t ** 3 * next[0],
+            mt ** 3 * vertex[1] + 3 * mt ** 2 * t * (vertex[1] + (out[1] || 0)) + 3 * mt * t ** 2 * (next[1] + (inc[1] || 0)) + t ** 3 * next[1],
+          ];
+          output.push(transformPoint(matrix, point));
+        }
       });
-    } else if (object.ty === "rc" || object.ty === "el") {
+      return;
+    }
+    if (object.ty === "rc" || object.ty === "el") {
       const position = lottieVector(object.p) || [0, 0]; const size = lottieVector(object.s);
       if (size) {
-        output.push([position[0] - Math.abs(size[0]) / 2, position[1] - Math.abs(size[1]) / 2]);
-        output.push([position[0] + Math.abs(size[0]) / 2, position[1] + Math.abs(size[1]) / 2]);
+        output.push(transformPoint(matrix, [position[0] - Math.abs(size[0]) / 2, position[1] - Math.abs(size[1]) / 2]));
+        output.push(transformPoint(matrix, [position[0] + Math.abs(size[0]) / 2, position[1] + Math.abs(size[1]) / 2]));
       }
-    } else if (object.ty === "sr") {
+      return;
+    }
+    if (object.ty === "sr") {
       const position = lottieVector(object.p) || [0, 0]; const radiusValue = lottieStaticValue(object.or ?? object.r);
       const radius = typeof radiusValue === "number" ? Math.abs(radiusValue) : 0;
       if (radius > 0) {
-        output.push([position[0] - radius, position[1] - radius]);
-        output.push([position[0] + radius, position[1] + radius]);
+        output.push(transformPoint(matrix, [position[0] - radius, position[1] - radius]));
+        output.push(transformPoint(matrix, [position[0] + radius, position[1] + radius]));
       }
+      return;
     }
-    Object.values(object).forEach((item) => collectLottieGeometryPoints(item, output));
-  }
+    if (Array.isArray(object.shapes)) (object.shapes as unknown[]).forEach((shape) => visit(shape, matrix, false));
+  };
+  visit(value, IDENTITY_MATRIX, true);
   return output;
 }
 
-function fitSvgPaths(template: Record<string, unknown>, current: Record<string, unknown>) {
-  const source = collectPathVertices(template); const target = collectLottieGeometryPoints(current);
+function fitSvgPaths(template: Record<string, unknown>, current: Record<string, unknown>, mode: ShapeInfo["mode"]) {
+  const source = collectPathVertices(template); const target = collectLottieGeometryPoints(current, mode !== "lottie-group");
   if (!source.length || !target.length) return;
   const bounds = (points: number[][]) => ({ minX: Math.min(...points.map((p) => p[0])), maxX: Math.max(...points.map((p) => p[0])), minY: Math.min(...points.map((p) => p[1])), maxY: Math.max(...points.map((p) => p[1])) });
   const a = bounds(source); const b = bounds(target); const sourceW = a.maxX - a.minX || 1; const sourceH = a.maxY - a.minY || 1; const targetW = b.maxX - b.minX || 100; const targetH = b.maxY - b.minY || 100;
@@ -773,7 +851,7 @@ function findShapeTemplate(data: unknown, target: string, targetMode?: ShapeInfo
 
 function transplantShape(current: Record<string, unknown>, template: Record<string, unknown>, mode: ShapeInfo["mode"]) {
   const next = clone(template);
-  if (next.__jsonableSvg || next.__jsonicleSvg) { fitSvgPaths(next, current); delete next.__jsonableSvg; delete next.__jsonicleSvg; }
+  if (next.__jsonableSvg || next.__jsonicleSvg) { fitSvgPaths(next, current, mode); delete next.__jsonableSvg; delete next.__jsonicleSvg; }
   if (mode === "lottie-group" && Array.isArray(current.it) && Array.isArray(next.it)) {
     const transform = (current.it as Record<string, unknown>[]).find((item) => item.ty === "tr");
     if (transform) next.it = (next.it as Record<string, unknown>[]).map((item) => item.ty === "tr" ? clone(transform) : item);
