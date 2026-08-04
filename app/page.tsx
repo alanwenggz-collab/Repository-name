@@ -691,23 +691,72 @@ async function svgToLottieGroup(svgText: string, name: string) {
   } finally { host.remove(); }
 }
 
+function lottieStaticValue(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const object = value as Record<string, unknown>;
+  if (!("k" in object)) return value;
+  const keyframes = object.k;
+  if (Array.isArray(keyframes) && keyframes.length && keyframes[0] && typeof keyframes[0] === "object" && !Array.isArray(keyframes[0])) {
+    const sample = (keyframes[0] as Record<string, unknown>).s ?? (keyframes[0] as Record<string, unknown>).e;
+    if (Array.isArray(sample) && sample.length === 1 && sample[0] && typeof sample[0] === "object") return sample[0];
+    if (sample !== undefined) return sample;
+  }
+  return keyframes;
+}
+
+function lottieVector(value: unknown) {
+  const resolved = lottieStaticValue(value);
+  return Array.isArray(resolved) && resolved.length >= 2 && resolved.slice(0, 2).every((item) => typeof item === "number")
+    ? [resolved[0] as number, resolved[1] as number]
+    : null;
+}
+
 function collectPathVertices(value: unknown, output: number[][] = []) {
   if (Array.isArray(value)) value.forEach((item) => collectPathVertices(item, output));
   else if (value && typeof value === "object") {
-    const object = value as Record<string, unknown>; const ks = object.ks as Record<string, unknown> | undefined; const k = ks?.k as Record<string, unknown> | undefined;
-    if (object.ty === "sh" && Array.isArray(k?.v)) (k.v as unknown[]).forEach((point) => { if (Array.isArray(point) && point.length >= 2) output.push(point as number[]); });
+    const object = value as Record<string, unknown>; const shape = lottieStaticValue(object.ks) as Record<string, unknown> | undefined;
+    if (object.ty === "sh" && Array.isArray(shape?.v)) (shape.v as unknown[]).forEach((point) => { if (Array.isArray(point) && point.length >= 2) output.push(point as number[]); });
     Object.values(object).forEach((item) => collectPathVertices(item, output));
   }
   return output;
 }
 
+function collectLottieGeometryPoints(value: unknown, output: number[][] = []) {
+  if (Array.isArray(value)) value.forEach((item) => collectLottieGeometryPoints(item, output));
+  else if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    if (object.hd === true) return output;
+    if (object.ty === "sh") {
+      const shape = lottieStaticValue(object.ks) as Record<string, unknown> | undefined;
+      if (Array.isArray(shape?.v)) (shape.v as unknown[]).forEach((point) => {
+        if (Array.isArray(point) && point.length >= 2 && point.slice(0, 2).every((item) => typeof item === "number")) output.push([point[0] as number, point[1] as number]);
+      });
+    } else if (object.ty === "rc" || object.ty === "el") {
+      const position = lottieVector(object.p) || [0, 0]; const size = lottieVector(object.s);
+      if (size) {
+        output.push([position[0] - Math.abs(size[0]) / 2, position[1] - Math.abs(size[1]) / 2]);
+        output.push([position[0] + Math.abs(size[0]) / 2, position[1] + Math.abs(size[1]) / 2]);
+      }
+    } else if (object.ty === "sr") {
+      const position = lottieVector(object.p) || [0, 0]; const radiusValue = lottieStaticValue(object.or ?? object.r);
+      const radius = typeof radiusValue === "number" ? Math.abs(radiusValue) : 0;
+      if (radius > 0) {
+        output.push([position[0] - radius, position[1] - radius]);
+        output.push([position[0] + radius, position[1] + radius]);
+      }
+    }
+    Object.values(object).forEach((item) => collectLottieGeometryPoints(item, output));
+  }
+  return output;
+}
+
 function fitSvgPaths(template: Record<string, unknown>, current: Record<string, unknown>) {
-  const source = collectPathVertices(template); const target = collectPathVertices(current);
+  const source = collectPathVertices(template); const target = collectLottieGeometryPoints(current);
   if (!source.length || !target.length) return;
   const bounds = (points: number[][]) => ({ minX: Math.min(...points.map((p) => p[0])), maxX: Math.max(...points.map((p) => p[0])), minY: Math.min(...points.map((p) => p[1])), maxY: Math.max(...points.map((p) => p[1])) });
   const a = bounds(source); const b = bounds(target); const sourceW = a.maxX - a.minX || 1; const sourceH = a.maxY - a.minY || 1; const targetW = b.maxX - b.minX || 100; const targetH = b.maxY - b.minY || 100;
-  const scale = Math.min(targetW / sourceW, targetH / sourceH); const sourceCX = (a.minX + a.maxX) / 2; const sourceCY = (a.minY + a.maxY) / 2; const targetCX = (b.minX + b.maxX) / 2; const targetCY = (b.minY + b.maxY) / 2;
-  source.forEach((point) => { point[0] = (point[0] - sourceCX) * scale + targetCX; point[1] = (point[1] - sourceCY) * scale + targetCY; });
+  const scaleX = targetW / sourceW; const scaleY = targetH / sourceH; const sourceCX = (a.minX + a.maxX) / 2; const sourceCY = (a.minY + a.maxY) / 2; const targetCX = (b.minX + b.maxX) / 2; const targetCY = (b.minY + b.maxY) / 2;
+  source.forEach((point) => { point[0] = (point[0] - sourceCX) * scaleX + targetCX; point[1] = (point[1] - sourceCY) * scaleY + targetCY; });
 }
 
 function findShapeTemplate(data: unknown, target: string, targetMode?: ShapeInfo["mode"], parentKey = "root"): Record<string, unknown> | null {

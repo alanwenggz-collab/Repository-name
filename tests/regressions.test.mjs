@@ -134,6 +134,19 @@ test("SVG replacement changes only the current shape instance", async () => {
   assert.doesNotMatch(page, /使用这个 SVG 替换全部同名形状/);
 });
 
+test("uploaded SVG geometry is fitted to the original JSON shape bounds", async () => {
+  const page = await readFile(new URL("app/page.tsx", root), "utf8");
+
+  assert.match(page, /function collectLottieGeometryPoints/);
+  assert.match(page, /object\.ty === "rc" \|\| object\.ty === "el"/);
+  assert.match(page, /object\.ty === "sr"/);
+  assert.match(page, /const target = collectLottieGeometryPoints\(current\)/);
+  assert.match(page, /const scaleX = targetW \/ sourceW; const scaleY = targetH \/ sourceH/);
+  assert.match(page, /point\[0\].*scaleX.*targetCX/);
+  assert.match(page, /point\[1\].*scaleY.*targetCY/);
+  assert.doesNotMatch(page, /const scale = Math\.min\(targetW \/ sourceW, targetH \/ sourceH\)/);
+});
+
 test("shape thumbnails select a visible representative frame", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
