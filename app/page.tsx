@@ -838,8 +838,8 @@ function fitSvgPathsToPoints(template: Record<string, unknown>, target: number[]
   if (!source.length || !target.length) return;
   const bounds = (points: number[][]) => ({ minX: Math.min(...points.map((p) => p[0])), maxX: Math.max(...points.map((p) => p[0])), minY: Math.min(...points.map((p) => p[1])), maxY: Math.max(...points.map((p) => p[1])) });
   const a = bounds(source); const b = bounds(target); const sourceW = a.maxX - a.minX || 1; const sourceH = a.maxY - a.minY || 1; const targetW = b.maxX - b.minX || 100; const targetH = b.maxY - b.minY || 100;
-  const scaleX = targetW / sourceW; const scaleY = targetH / sourceH; const sourceCX = (a.minX + a.maxX) / 2; const sourceCY = (a.minY + a.maxY) / 2; const targetCX = (b.minX + b.maxX) / 2; const targetCY = (b.minY + b.maxY) / 2;
-  source.forEach((point) => { point[0] = (point[0] - sourceCX) * scaleX + targetCX; point[1] = (point[1] - sourceCY) * scaleY + targetCY; });
+  const scale = Math.min(targetW / sourceW, targetH / sourceH); const sourceCX = (a.minX + a.maxX) / 2; const sourceCY = (a.minY + a.maxY) / 2; const targetCX = (b.minX + b.maxX) / 2; const targetCY = (b.minY + b.maxY) / 2;
+  source.forEach((point) => { point[0] = (point[0] - sourceCX) * scale + targetCX; point[1] = (point[1] - sourceCY) * scale + targetCY; });
 }
 
 function fitSvgPaths(template: Record<string, unknown>, current: Record<string, unknown>, mode: ShapeInfo["mode"]) {

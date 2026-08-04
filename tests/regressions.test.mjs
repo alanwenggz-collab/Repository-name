@@ -141,10 +141,10 @@ test("uploaded SVG geometry is fitted to the original JSON shape bounds", async 
   assert.match(page, /object\.ty === "rc" \|\| object\.ty === "el"/);
   assert.match(page, /object\.ty === "sr"/);
   assert.match(page, /fitSvgPathsToPoints\(template, collectLottieGeometryPoints\(current, mode !== "lottie-group"\)\)/);
-  assert.match(page, /const scaleX = targetW \/ sourceW; const scaleY = targetH \/ sourceH/);
-  assert.match(page, /point\[0\].*scaleX.*targetCX/);
-  assert.match(page, /point\[1\].*scaleY.*targetCY/);
-  assert.doesNotMatch(page, /const scale = Math\.min\(targetW \/ sourceW, targetH \/ sourceH\)/);
+  assert.match(page, /const scale = Math\.min\(targetW \/ sourceW, targetH \/ sourceH\)/);
+  assert.match(page, /point\[0\].*scale.*targetCX/);
+  assert.match(page, /point\[1\].*scale.*targetCY/);
+  assert.doesNotMatch(page, /const scaleX = targetW \/ sourceW; const scaleY = targetH \/ sourceH/);
 });
 
 test("AE precomp replacement preserves the instance layer and fits inside its asset coordinates", async () => {
