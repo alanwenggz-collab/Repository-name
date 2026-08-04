@@ -122,6 +122,18 @@ test("shape recognition excludes non-visual AE helper and matte layers", async (
   assert.match(page, /object\.ty === "gr" && hasRenderableLottieGeometry\(object\.it\)/);
 });
 
+test("SVG replacement changes only the current shape instance", async () => {
+  const page = await readFile(new URL("app/page.tsx", root), "utf8");
+
+  assert.match(page, /function replaceSingleShape/);
+  assert.match(page, /state = \{ replaced: false \}/);
+  assert.match(page, /if \(state\.replaced\) return data/);
+  assert.match(page, /state\.replaced = true/);
+  assert.match(page, /replaceSingleShape\(data, from, from\.name, template\)/);
+  assert.match(page, />只替换当前这个形状</);
+  assert.doesNotMatch(page, /使用这个 SVG 替换全部同名形状/);
+});
+
 test("shape thumbnails select a visible representative frame", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
