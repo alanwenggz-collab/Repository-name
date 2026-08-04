@@ -770,13 +770,18 @@ function lottieTransformMatrix(transform: Record<string, unknown> | undefined): 
   ];
 }
 
-function collectLottieGeometryPoints(value: unknown, includeRootGroupTransform = true) {
+function collectLottieGeometryPoints(value: unknown, includeRootGroupTransform = true, includeRootLayerTransform = false) {
   const output: number[][] = [];
   const visit = (node: unknown, matrix: Matrix2D, isRoot: boolean) => {
     if (Array.isArray(node)) { node.forEach((item) => visit(item, matrix, false)); return; }
     if (!node || typeof node !== "object") return;
     const object = node as Record<string, unknown>;
     if (object.hd === true) return;
+    if (typeof object.ty === "number" && object.ks && typeof object.ks === "object" && !Array.isArray(object.ks)) {
+      const nextMatrix = isRoot && !includeRootLayerTransform ? matrix : multiplyMatrix(matrix, lottieTransformMatrix(object.ks as Record<string, unknown>));
+      if (Array.isArray(object.shapes)) (object.shapes as unknown[]).forEach((shape) => visit(shape, nextMatrix, false));
+      return;
+    }
     if (object.ty === "gr" && Array.isArray(object.it)) {
       const items = object.it as Record<string, unknown>[];
       const transform = items.find((item) => item?.ty === "tr");
@@ -794,8 +799,8 @@ function collectLottieGeometryPoints(value: unknown, includeRootGroupTransform =
         output.push(transformPoint(matrix, vertex));
         if (nextIndex < 0) return;
         const next = validVertices[nextIndex]; const out = Array.isArray(outgoing[index]) ? outgoing[index] as number[] : [0, 0]; const inc = Array.isArray(incoming[nextIndex]) ? incoming[nextIndex] as number[] : [0, 0];
-        for (let step = 1; step < 8; step += 1) {
-          const t = step / 8; const mt = 1 - t;
+        for (let step = 1; step < 64; step += 1) {
+          const t = step / 64; const mt = 1 - t;
           const point = [
             mt ** 3 * vertex[0] + 3 * mt ** 2 * t * (vertex[0] + (out[0] || 0)) + 3 * mt * t ** 2 * (next[0] + (inc[0] || 0)) + t ** 3 * next[0],
             mt ** 3 * vertex[1] + 3 * mt ** 2 * t * (vertex[1] + (out[1] || 0)) + 3 * mt * t ** 2 * (next[1] + (inc[1] || 0)) + t ** 3 * next[1],
@@ -828,13 +833,69 @@ function collectLottieGeometryPoints(value: unknown, includeRootGroupTransform =
   return output;
 }
 
-function fitSvgPaths(template: Record<string, unknown>, current: Record<string, unknown>, mode: ShapeInfo["mode"]) {
-  const source = collectPathVertices(template); const target = collectLottieGeometryPoints(current, mode !== "lottie-group");
+function fitSvgPathsToPoints(template: Record<string, unknown>, target: number[][]) {
+  const source = collectPathVertices(template);
   if (!source.length || !target.length) return;
   const bounds = (points: number[][]) => ({ minX: Math.min(...points.map((p) => p[0])), maxX: Math.max(...points.map((p) => p[0])), minY: Math.min(...points.map((p) => p[1])), maxY: Math.max(...points.map((p) => p[1])) });
   const a = bounds(source); const b = bounds(target); const sourceW = a.maxX - a.minX || 1; const sourceH = a.maxY - a.minY || 1; const targetW = b.maxX - b.minX || 100; const targetH = b.maxY - b.minY || 100;
   const scaleX = targetW / sourceW; const scaleY = targetH / sourceH; const sourceCX = (a.minX + a.maxX) / 2; const sourceCY = (a.minY + a.maxY) / 2; const targetCX = (b.minX + b.maxX) / 2; const targetCY = (b.minY + b.maxY) / 2;
   source.forEach((point) => { point[0] = (point[0] - sourceCX) * scaleX + targetCX; point[1] = (point[1] - sourceCY) * scaleY + targetCY; });
+}
+
+function fitSvgPaths(template: Record<string, unknown>, current: Record<string, unknown>, mode: ShapeInfo["mode"]) {
+  fitSvgPathsToPoints(template, collectLottieGeometryPoints(current, mode !== "lottie-group"));
+}
+
+function replaceSinglePrecomp(data: unknown, from: ShapeInfo, template: Record<string, unknown>) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  const root = clone(data as Record<string, unknown>);
+  const assets = Array.isArray(root.assets) ? root.assets.filter((asset): asset is Record<string, unknown> => !!asset && typeof asset === "object" && !Array.isArray(asset)) : [];
+  if (!assets.length) return data;
+
+  let targetLayer: Record<string, unknown> | null = null;
+  const findLayer = (layers: unknown) => {
+    if (targetLayer || !Array.isArray(layers)) return;
+    for (const layer of layers) {
+      if (!layer || typeof layer !== "object" || Array.isArray(layer)) continue;
+      const object = layer as Record<string, unknown>;
+      if (object.ty === 0 && object.nm === from.name && typeof object.refId === "string") { targetLayer = object; return; }
+    }
+  };
+  findLayer(root.layers);
+  if (!targetLayer) assets.forEach((asset) => findLayer(asset.layers));
+  if (!targetLayer) return data;
+  const matchedLayer = targetLayer as Record<string, unknown>;
+
+  const sourceAsset = assets.find((asset) => asset.id === matchedLayer.refId);
+  if (!sourceAsset || !Array.isArray(sourceAsset.layers)) return data;
+  const targetPoints = collectLottieGeometryPoints(sourceAsset.layers, true, true);
+  if (!targetPoints.length) return data;
+
+  const templateShapes = Array.isArray(template.shapes) ? template.shapes as Record<string, unknown>[] : [];
+  const replacementGroup = clone(templateShapes[0] || template);
+  fitSvgPathsToPoints(replacementGroup, targetPoints);
+  delete replacementGroup.__jsonableSvg;
+  delete replacementGroup.__jsonicleSvg;
+
+  const sourceLayers = sourceAsset.layers.filter((layer): layer is Record<string, unknown> => !!layer && typeof layer === "object" && !Array.isArray(layer));
+  const ip = Math.min(0, ...sourceLayers.map((layer) => typeof layer.ip === "number" ? layer.ip : 0));
+  const op = Math.max(1, ...sourceLayers.map((layer) => typeof layer.op === "number" ? layer.op : 1));
+  const replacementLayer = {
+    ddd: 0, ind: 1, ty: 4, nm: from.name, sr: 1,
+    ks: {
+      o: { a: 0, k: 100 }, r: { a: 0, k: 0 }, p: { a: 0, k: [0, 0, 0] },
+      a: { a: 0, k: [0, 0, 0] }, s: { a: 0, k: [100, 100, 100] },
+    },
+    ao: 0, shapes: [replacementGroup], ip, op, st: 0, bm: 0,
+  };
+  const existingIds = new Set(assets.map((asset) => typeof asset.id === "string" ? asset.id : ""));
+  const baseId = `${String(sourceAsset.id || "precomp")}__jsonable`;
+  let nextId = baseId; let suffix = 2;
+  while (existingIds.has(nextId)) { nextId = `${baseId}_${suffix}`; suffix += 1; }
+  const replacementAsset = { ...clone(sourceAsset), id: nextId, nm: from.name, layers: [replacementLayer] };
+  matchedLayer.refId = nextId;
+  root.assets = [...assets, replacementAsset];
+  return root;
 }
 
 function findShapeTemplate(data: unknown, target: string, targetMode?: ShapeInfo["mode"], parentKey = "root"): Record<string, unknown> | null {
@@ -868,6 +929,7 @@ function renameComposed(object: Record<string, unknown>, from: ShapeInfo, target
 }
 
 function replaceSingleShape(data: unknown, from: ShapeInfo, target: string, template: Record<string, unknown> | null, parentKey = "root", state = { replaced: false }): unknown {
+  if (parentKey === "root" && from.mode === "lottie-precomp" && template) return replaceSinglePrecomp(data, from, template);
   if (state.replaced) return data;
   if (Array.isArray(data)) return data.map((child) => state.replaced ? child : replaceSingleShape(child, from, target, template, parentKey, state));
   if (data && typeof data === "object") {
