@@ -648,6 +648,94 @@ function rgbArray(value: string) {
   return [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255, 1];
 }
 
+type SvgLottieContour = { vertices: number[][]; incoming: number[][]; outgoing: number[][]; closed: boolean };
+
+function svgPathToLottieContours(pathData: string, matrix: DOMMatrix | null): SvgLottieContour[] | null {
+  const tokens = pathData.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g) || [];
+  const contours: SvgLottieContour[] = [];
+  let tokenIndex = 0; let command = ""; let current = [0, 0]; let start = [0, 0];
+  let contour: SvgLottieContour | null = null; let lastCubicControl: number[] | null = null; let lastQuadraticControl: number[] | null = null;
+  const isCommand = (token: string | undefined) => !!token && /^[a-zA-Z]$/.test(token);
+  const read = () => Number(tokens[tokenIndex++]);
+  const point = (x: number, y: number, relative: boolean) => relative ? [current[0] + x, current[1] + y] : [x, y];
+  const finish = () => { if (contour?.vertices.length) contours.push(contour); contour = null; };
+  const close = () => { if (contour) contour.closed = true; };
+  const begin = (next: number[]) => {
+    finish(); current = next; start = [...next];
+    contour = { vertices: [[...next]], incoming: [[0, 0]], outgoing: [[0, 0]], closed: false };
+    lastCubicControl = null; lastQuadraticControl = null;
+  };
+  const line = (next: number[]) => {
+    if (!contour) begin(current);
+    contour!.vertices.push([...next]); contour!.incoming.push([0, 0]); contour!.outgoing.push([0, 0]);
+    current = next; lastCubicControl = null; lastQuadraticControl = null;
+  };
+  const cubic = (control1: number[], control2: number[], next: number[]) => {
+    if (!contour) begin(current);
+    const index = contour!.vertices.length - 1;
+    contour!.outgoing[index] = [control1[0] - current[0], control1[1] - current[1]];
+    contour!.vertices.push([...next]);
+    contour!.incoming.push([control2[0] - next[0], control2[1] - next[1]]);
+    contour!.outgoing.push([0, 0]);
+    current = next; lastCubicControl = control2; lastQuadraticControl = null;
+  };
+  const quadratic = (control: number[], next: number[]) => {
+    const control1 = [current[0] + (control[0] - current[0]) * 2 / 3, current[1] + (control[1] - current[1]) * 2 / 3];
+    const control2 = [next[0] + (control[0] - next[0]) * 2 / 3, next[1] + (control[1] - next[1]) * 2 / 3];
+    cubic(control1, control2, next); lastCubicControl = null; lastQuadraticControl = control;
+  };
+
+  while (tokenIndex < tokens.length) {
+    if (isCommand(tokens[tokenIndex])) command = tokens[tokenIndex++];
+    if (!command) return null;
+    const relative = command === command.toLowerCase();
+    const upper = command.toUpperCase();
+    if (upper === "Z") {
+      close();
+      current = [...start]; lastCubicControl = null; lastQuadraticControl = null; command = "";
+      continue;
+    }
+    if (upper === "A") return null;
+    if (isCommand(tokens[tokenIndex]) || tokenIndex >= tokens.length) return null;
+    if (upper === "M") {
+      const next = point(read(), read(), relative); begin(next);
+      command = relative ? "l" : "L";
+    } else if (upper === "L") {
+      line(point(read(), read(), relative));
+    } else if (upper === "H") {
+      const x = read(); line([relative ? current[0] + x : x, current[1]]);
+    } else if (upper === "V") {
+      const y = read(); line([current[0], relative ? current[1] + y : y]);
+    } else if (upper === "C") {
+      const control1 = point(read(), read(), relative); const control2 = point(read(), read(), relative); const next = point(read(), read(), relative);
+      cubic(control1, control2, next);
+    } else if (upper === "S") {
+      const control1 = lastCubicControl ? [current[0] * 2 - lastCubicControl[0], current[1] * 2 - lastCubicControl[1]] : [...current];
+      const control2 = point(read(), read(), relative); const next = point(read(), read(), relative);
+      cubic(control1, control2, next);
+    } else if (upper === "Q") {
+      const control = point(read(), read(), relative); const next = point(read(), read(), relative);
+      quadratic(control, next);
+    } else if (upper === "T") {
+      const control = lastQuadraticControl ? [current[0] * 2 - lastQuadraticControl[0], current[1] * 2 - lastQuadraticControl[1]] : [...current];
+      quadratic(control, point(read(), read(), relative));
+    } else return null;
+  }
+  finish();
+  if (!contours.length) return null;
+  if (!matrix) return contours;
+  const transformVector = ([x, y]: number[]) => [matrix.a * x + matrix.c * y, matrix.b * x + matrix.d * y];
+  return contours.map((item) => ({
+    ...item,
+    vertices: item.vertices.map(([x, y]) => {
+      const transformed = new DOMPoint(x, y).matrixTransform(matrix);
+      return [transformed.x, transformed.y];
+    }),
+    incoming: item.incoming.map(transformVector),
+    outgoing: item.outgoing.map(transformVector),
+  }));
+}
+
 async function svgToLottieGroup(svgText: string, name: string) {
   const parsed = new DOMParser().parseFromString(svgText, "image/svg+xml");
   if (parsed.querySelector("parsererror") || parsed.documentElement.tagName.toLowerCase() !== "svg") throw new Error("INVALID_SVG");
@@ -662,28 +750,21 @@ async function svgToLottieGroup(svgText: string, name: string) {
       const tag = element.tagName.toLowerCase();
       const matrix = element.getCTM();
       const pathData = tag === "path" ? element.getAttribute("d") || "" : "";
-      const subpaths = tag === "path" ? pathData.match(/[Mm][\s\S]*?(?=[Mm]|$)/g)?.filter((part) => part.trim()) || [] : [];
-      const geometries: SVGGeometryElement[] = subpaths.length > 1
-        ? subpaths.map((part) => {
-          const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-          path.setAttribute("d", part); imported.appendChild(path); return path;
-        })
-        : [element];
-      const contours = geometries.map((geometry, contourIndex) => {
-        const length = geometry.getTotalLength();
-        if (!Number.isFinite(length) || length <= 0) return null;
-        const contourData = subpaths.length > 1 ? subpaths[contourIndex] : pathData;
-        const closed = ["rect", "circle", "ellipse", "polygon"].includes(tag) || (tag === "path" && /z\s*$/i.test(contourData || ""));
+      const exactContours = tag === "path" ? svgPathToLottieContours(pathData, matrix) : null;
+      const contours: SvgLottieContour[] = exactContours || (() => {
+        const length = element.getTotalLength();
+        if (!Number.isFinite(length) || length <= 0) return [];
+        const closed = ["rect", "circle", "ellipse", "polygon"].includes(tag) || (tag === "path" && /z\s*$/i.test(pathData));
         const count = Math.min(128, Math.max(closed ? 12 : 8, Math.ceil(length / 2.5)));
         const vertices = Array.from({ length: count }, (_, pointIndex) => {
           const distance = closed ? length * pointIndex / count : length * pointIndex / Math.max(count - 1, 1);
-          const point = geometry.getPointAtLength(distance);
+          const point = element.getPointAtLength(distance);
           const transformed = matrix ? new DOMPoint(point.x, point.y).matrixTransform(matrix) : point;
           return [transformed.x, transformed.y];
         });
-        return { vertices, closed };
-      }).filter((contour): contour is NonNullable<typeof contour> => !!contour);
-      if (subpaths.length > 1) geometries.forEach((geometry) => geometry.remove());
+        const zeroTangents = vertices.map(() => [0, 0]);
+        return [{ vertices, incoming: zeroTangents.map((point) => [...point]), outgoing: zeroTangents, closed }];
+      })();
       if (!contours.length) return null;
       const style = getComputedStyle(element);
       return { index, contours, fill: style.fill, fillRule: style.fillRule, fillOpacity: Number(style.fillOpacity || 1), stroke: style.stroke, strokeOpacity: Number(style.strokeOpacity || 1), strokeWidth: Number.parseFloat(style.strokeWidth || "1") || 1 };
@@ -695,8 +776,9 @@ async function svgToLottieGroup(svgText: string, name: string) {
     const parts = sampled.map((item) => {
       const items: Record<string, unknown>[] = item.contours.map((contour, contourIndex) => {
         const vertices = contour.vertices.map(([x, y]) => [(x - centerX) * scale, (y - centerY) * scale]);
-        const zeroTangents = vertices.map(() => [0, 0]);
-        return { ty: "sh", nm: `Path ${item.index + 1}.${contourIndex + 1}`, ks: { a: 0, k: { i: zeroTangents, o: zeroTangents, v: vertices, c: contour.closed } }, hd: false };
+        const incoming = contour.incoming.map(([x, y]) => [x * scale, y * scale]);
+        const outgoing = contour.outgoing.map(([x, y]) => [x * scale, y * scale]);
+        return { ty: "sh", nm: `Path ${item.index + 1}.${contourIndex + 1}`, ks: { a: 0, k: { i: incoming, o: outgoing, v: vertices, c: contour.closed } }, hd: false };
       });
       if (item.fill !== "none") items.push({ ty: "fl", c: { a: 0, k: rgbArray(item.fill) }, o: { a: 0, k: Math.max(0, Math.min(100, item.fillOpacity * 100)) }, r: item.fillRule === "evenodd" ? 2 : 1, hd: false });
       if (item.stroke !== "none" && item.strokeWidth > 0) items.push({ ty: "st", c: { a: 0, k: rgbArray(item.stroke) }, o: { a: 0, k: Math.max(0, Math.min(100, item.strokeOpacity * 100)) }, w: { a: 0, k: item.strokeWidth * scale }, lc: 2, lj: 2, hd: false });
@@ -834,12 +916,24 @@ function collectLottieGeometryPoints(value: unknown, includeRootGroupTransform =
 }
 
 function fitSvgPathsToPoints(template: Record<string, unknown>, target: number[][]) {
-  const source = collectPathVertices(template);
+  const source = collectLottieGeometryPoints(template);
   if (!source.length || !target.length) return;
   const bounds = (points: number[][]) => ({ minX: Math.min(...points.map((p) => p[0])), maxX: Math.max(...points.map((p) => p[0])), minY: Math.min(...points.map((p) => p[1])), maxY: Math.max(...points.map((p) => p[1])) });
   const a = bounds(source); const b = bounds(target); const sourceW = a.maxX - a.minX || 1; const sourceH = a.maxY - a.minY || 1; const targetW = b.maxX - b.minX || 100; const targetH = b.maxY - b.minY || 100;
   const scale = Math.min(targetW / sourceW, targetH / sourceH); const sourceCX = (a.minX + a.maxX) / 2; const sourceCY = (a.minY + a.maxY) / 2; const targetCX = (b.minX + b.maxX) / 2; const targetCY = (b.minY + b.maxY) / 2;
-  source.forEach((point) => { point[0] = (point[0] - sourceCX) * scale + targetCX; point[1] = (point[1] - sourceCY) * scale + targetCY; });
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) { value.forEach(visit); return; }
+    if (!value || typeof value !== "object") return;
+    const object = value as Record<string, unknown>;
+    if (object.ty === "sh") {
+      const shape = lottieStaticValue(object.ks) as Record<string, unknown> | undefined;
+      if (Array.isArray(shape?.v)) (shape.v as number[][]).forEach((point) => { point[0] = (point[0] - sourceCX) * scale + targetCX; point[1] = (point[1] - sourceCY) * scale + targetCY; });
+      for (const key of ["i", "o"]) if (Array.isArray(shape?.[key])) (shape[key] as number[][]).forEach((point) => { point[0] *= scale; point[1] *= scale; });
+      return;
+    }
+    Object.values(object).forEach(visit);
+  };
+  visit(template);
 }
 
 function fitSvgPaths(template: Record<string, unknown>, current: Record<string, unknown>, mode: ShapeInfo["mode"]) {

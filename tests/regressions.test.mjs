@@ -144,6 +144,7 @@ test("uploaded SVG geometry is fitted to the original JSON shape bounds", async 
   assert.match(page, /const scale = Math\.min\(targetW \/ sourceW, targetH \/ sourceH\)/);
   assert.match(page, /point\[0\].*scale.*targetCX/);
   assert.match(page, /point\[1\].*scale.*targetCY/);
+  assert.match(page, /for \(const key of \["i", "o"\]\).*point\[0\] \*= scale; point\[1\] \*= scale/);
   assert.doesNotMatch(page, /const scaleX = targetW \/ sourceW; const scaleY = targetH \/ sourceH/);
 });
 
@@ -161,9 +162,13 @@ test("AE precomp replacement preserves the instance layer and fits inside its as
 test("compound SVG paths keep their independent contours and target transforms", async () => {
   const page = await readFile(new URL("app/page.tsx", root), "utf8");
 
-  assert.match(page, /pathData\.match\(\/\[Mm\]/);
-  assert.match(page, /const contours = geometries\.map/);
+  assert.match(page, /function svgPathToLottieContours/);
+  assert.match(page, /contour!\.outgoing\[index\] = \[control1\[0\] - current\[0\]/);
+  assert.match(page, /contour!\.incoming\.push\(\[control2\[0\] - next\[0\]/);
+  assert.match(page, /const exactContours = tag === "path" \? svgPathToLottieContours\(pathData, matrix\) : null/);
   assert.match(page, /item\.contours\.map/);
+  assert.match(page, /const incoming = contour\.incoming\.map/);
+  assert.match(page, /const outgoing = contour\.outgoing\.map/);
   assert.match(page, /fillRule === "evenodd" \? 2 : 1/);
   assert.match(page, /function lottieTransformMatrix/);
   assert.match(page, /multiplyMatrix\(matrix, lottieTransformMatrix\(transform\)\)/);
